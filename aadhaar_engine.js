@@ -77,15 +77,14 @@ async function prepareContext() {
     
     const context = await globalBrowser.newContext(options);
     const umPage = await context.newPage();
-    const uiPage = await context.newPage();
 
     const umUrl = "https://web.umang.gov.in/web_new/department?url=aadhar_new%2Fservice%2F60007&dept_id=17&dept_name=Retrieve%20EID%2FAadhaar%20Number&fromService=true";
-    const uiUrl = "https://myaadhaar.uidai.gov.in/genricDownloadAadhaar/en";
 
-    await Promise.all([
-        umPage.goto(umUrl, { waitUntil: 'networkidle', timeout: 120000 }).catch((e) => { console.warn('[POOL] umPage load failed:', e.message); }),
-        uiPage.goto(uiUrl, { waitUntil: 'domcontentloaded', timeout: 120000 }).catch((e) => { console.warn('[POOL] uiPage load failed:', e.message); })
-    ]);
+    await umPage.goto(umUrl, { waitUntil: 'networkidle', timeout: 120000 }).catch((e) => { console.warn('[POOL] umPage load failed:', e.message); });
+
+    // uiPage is NOT pre-loaded — UIDAI blocks proxy during warmup.
+    // It will be navigated fresh in executeTask when Phase 2 begins.
+    const uiPage = await context.newPage();
 
     return { context, umPage, uiPage, busy: false };
 }
@@ -303,8 +302,23 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
         await updateProg("UIDAI Captcha Phase...", "🔵[████████▒▒▒▒] 80%");
         const stid2 = await sendStk(bot, chatId, 'PHASE3', settings);
         if (stid2) userPageRegistry[sId].sentStickers.push(stid2);
-        
-        await uiPage.waitForSelector('input[value="eid"]');
+
+        // Load UIDAI page now (lazy — not pre-loaded in pool due to proxy timeout issues)
+        const uiUrl = "https://myaadhaar.uidai.gov.in/genricDownloadAadhaar/en";
+        let uiLoaded = false;
+        for (let _ui = 0; _ui < 3; _ui++) {
+            try {
+                await uiPage.goto(uiUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+                uiLoaded = true;
+                break;
+            } catch (e) {
+                console.warn(`[UIDAI] Page load attempt ${_ui + 1} failed: ${e.message}`);
+                if (_ui === 2) throw new Error("UIDAI site failed to load after 3 attempts. Check proxy or try later.");
+                await uiPage.waitForTimeout(3000);
+            }
+        }
+
+        await uiPage.waitForSelector('input[value="eid"]', { timeout: 30000 });
         await uiPage.evaluate(async (rawEID) => {
             function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
             function setNativeValue(el, val) {
