@@ -497,17 +497,22 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                 
                 const dobEl = dobFieldCheck.first();
                 
-                // Method 1: Try direct fill via nativeInputValueSetter
-                const filled = await frame.evaluate(({ selector, value }) => {
-                    const el = document.querySelector(selector);
-                    if (!el) return false;
-                    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                    nativeSetter.call(el, value);
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                    el.dispatchEvent(new Event('blur', { bubbles: true }));
-                    return true;
-                }, { selector: 'input[formcontrolname="dob"], input#mat-input-3', value: dobForInput }).catch(() => false);
+                // Method 1: Use actual frame object (not frameLocator) for evaluate
+                const frameHandle = await umPage.$('#myIframe');
+                const actualFrame = frameHandle ? await frameHandle.contentFrame() : null;
+                let filled = false;
+                if (actualFrame) {
+                    filled = await actualFrame.evaluate(({ value }) => {
+                        const el = document.querySelector('input[formcontrolname="dob"]') || document.querySelector('input#mat-input-3');
+                        if (!el) return false;
+                        const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                        nativeSetter.call(el, value);
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                        el.dispatchEvent(new Event('blur', { bubbles: true }));
+                        return true;
+                    }, { value: dobForInput }).catch(() => false);
+                }
                 
                 if (!filled) {
                     // Method 2: click + type digit by digit (Angular datepicker segments)
