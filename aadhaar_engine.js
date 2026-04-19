@@ -292,13 +292,14 @@ async function doUmangLogin(umPage, bot, chatId, stateTracker) {
         throw new Error(`Get OTP button nahi mila. Visible: ${btnTexts.join(' | ')}`);
     }
 
-    // Screenshot after clicking — confirm OTP sent
-    await umPage.waitForTimeout(2000);
-    const dbg2 = path.join(__dirname, `umang_after_otp_click.png`);
-    await umPage.screenshot({ path: dbg2 }).catch(() => {});
-    if (fs.existsSync(dbg2)) {
-        await bot.sendPhoto(chatId, dbg2, { caption: '📸 OTP bheja — kya page change hua?' }).catch(() => {});
-        fs.unlinkSync(dbg2);
+    // Close the "OTP sent" popup if it appears
+    await umPage.waitForTimeout(1500);
+    const closeBtn = umPage.locator('button:has-text("Close"), button:has-text("OK"), button:has-text("Ok")').first();
+    const closeBtnVisible = await closeBtn.isVisible().catch(() => false);
+    if (closeBtnVisible) {
+        await closeBtn.click();
+        console.log('[UMANG] Popup closed');
+        await umPage.waitForTimeout(500);
     }
 
     const resOtp = await askTelegram(bot, chatId, stateTracker,
@@ -306,29 +307,48 @@ async function doUmangLogin(umPage, bot, chatId, stateTracker) {
         'text', null, 180000
     );
     const otpVal = String(resOtp.data).match(/\b\d{4,6}\b/);
+    const otpDigits = (otpVal ? otpVal[0] : resOtp.data.trim()).replace(/\D/g, '');
+
     await umPage.waitForTimeout(500);
 
-    // STEP 4: Enter OTP
-    const otpSelectors = [
+    // OTP can be 6 individual boxes OR a single input
+    // Try single input first
+    const singleOtpSelectors = [
         'input[placeholder*="OTP"]',
         'input[placeholder*="otp"]',
         'input[formcontrolname*="otp"]',
         'input[maxlength="6"]',
-        'input[maxlength="4"]',
-        'input[type="number"]',
-        'input[type="tel"]',
     ];
-    let otpInput = null;
-    for (const sel of otpSelectors) {
+    let otpFilled = false;
+    for (const sel of singleOtpSelectors) {
         const el = umPage.locator(sel).first();
         const visible = await el.isVisible().catch(() => false);
-        if (visible) { otpInput = el; console.log(`[UMANG] OTP input: ${sel}`); break; }
+        if (visible) {
+            await el.fill(otpDigits);
+            otpFilled = true;
+            console.log(`[UMANG] OTP filled in single input: ${sel}`);
+            break;
+        }
     }
-    if (!otpInput) throw new Error("OTP input field nahi mila.");
-    await otpInput.fill(otpVal ? otpVal[0] : resOtp.data.trim());
 
-    // STEP 5: Submit login
-    const submitSelectors = ['button:has-text("Login")', 'button:has-text("Verify")', 'button:has-text("Submit")', 'button:has-text("Continue")', 'button[type="submit"]'];
+    // If not single input, try 6 individual boxes
+    if (!otpFilled) {
+        const boxes = await umPage.locator('input[maxlength="1"], input[type="tel"][maxlength="1"], input[type="number"][maxlength="1"]').all();
+        if (boxes.length >= otpDigits.length) {
+            for (let i = 0; i < otpDigits.length && i < boxes.length; i++) {
+                await boxes[i].click();
+                await boxes[i].fill(otpDigits[i]);
+                await umPage.waitForTimeout(100);
+            }
+            otpFilled = true;
+            console.log('[UMANG] OTP filled in individual boxes');
+        }
+    }
+
+    if (!otpFilled) throw new Error("OTP input field nahi mila.");
+
+    // STEP 5: Submit — "Verify OTP" button
+    const submitSelectors = ['button:has-text("Verify OTP")', 'button:has-text("Verify")', 'button:has-text("Login")', 'button:has-text("Submit")', 'button[type="submit"]'];
     for (const sel of submitSelectors) {
         const el = umPage.locator(sel).first();
         const visible = await el.isVisible().catch(() => false);
