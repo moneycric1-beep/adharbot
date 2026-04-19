@@ -744,20 +744,28 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
         // Load UIDAI page now (lazy — not pre-loaded in pool due to proxy timeout issues)
         const uiUrl = "https://myaadhaar.uidai.gov.in/genricDownloadAadhaar/en";
         let uiLoaded = false;
-        for (let _ui = 0; _ui < 3; _ui++) {
+        let activeuiPage = uiPage;
+        // Block heavy resources to speed up load over proxy
+        await activeuiPage.route('**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf,eot,ico}', r => r.abort()).catch(() => {});
+        for (let _ui = 0; _ui < 5; _ui++) {
             try {
-                await uiPage.goto(uiUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+                await activeuiPage.goto(uiUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
                 uiLoaded = true;
                 break;
             } catch (e) {
-                console.warn(`[UIDAI] Page load attempt ${_ui + 1} failed: ${e.message}`);
-                if (_ui === 2) throw new Error("UIDAI site failed to load after 3 attempts. Check proxy or try later.");
-                await uiPage.waitForTimeout(3000);
+                console.warn(`[UIDAI] Page load attempt ${_ui + 1} failed: ${e.message.split('\n')[0]}`);
+                if (_ui >= 4) throw new Error("UIDAI site failed to load after 5 attempts. Check proxy or try later.");
+                // Create a fresh page on retry to avoid stale context
+                try {
+                    activeuiPage = await poolEntry.uiContext.newPage();
+                    await activeuiPage.route('**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf,eot,ico}', r => r.abort()).catch(() => {});
+                } catch (ne) { /* use old page */ }
+                await activeuiPage.waitForTimeout(5000);
             }
         }
 
-        await uiPage.waitForSelector('input[value="eid"]', { timeout: 30000 });
-        await uiPage.evaluate(async (rawEID) => {
+        await activeuiPage.waitForSelector('input[value="eid"]', { timeout: 30000 });
+        await activeuiPage.evaluate(async (rawEID) => {
             function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
             function setNativeValue(el, val) {
                 const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
@@ -798,7 +806,7 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
         let uidaiSolved = false;
         while (!uidaiSolved) {
             checkAbort();
-            const captchaImg = uiPage.locator('img[alt*="APTCHA"], .captcha-img');
+            const captchaImg = activeuiPage.locator('img[alt*="APTCHA"], .captcha-img');
             const tmp = path.join(__dirname, `sys_ui_${chatId}.png`);
             await captchaImg.first().screenshot({ path: tmp, padding: 10, scale: 2 }).catch(async () => {
                 const base64 = await captchaImg.first().getAttribute('src');
@@ -808,23 +816,23 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
             const resC = await askTelegram(bot, chatId, stateTracker, "<blockquote>🔰 <b>Registry Firewall (UIDAI):</b>\nDecode the Captcha:</blockquote>", 'CAPTCHA', tmp);
             if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
             
-            await safeFill(uiPage.locator('input[aria-label="Enter Captcha"]'), resC.data, 'UIDAI_CAPTCHA');
-            await uiPage.locator('button:has-text("Send OTP")').click({ force: true });
+            await safeFill(activeuiPage.locator('input[aria-label="Enter Captcha"]'), resC.data, 'UIDAI_CAPTCHA');
+            await activeuiPage.locator('button:has-text("Send OTP")').click({ force: true });
             
             const resVal = await Promise.race([
-                uiPage.locator('input[aria-label="Enter OTP"]').waitFor({ state: 'visible', timeout: 15000 }).then(() => 'success'),
-                uiPage.locator('div.Toastify__toast-body').waitFor({ state: 'visible', timeout: 6000 }).then(() => 'error_toast'),
-                uiPage.locator('mat-dialog-container').waitFor({ state: 'visible', timeout: 6000 }).then(() => 'error_dialog')
+                activeuiPage.locator('input[aria-label="Enter OTP"]').waitFor({ state: 'visible', timeout: 15000 }).then(() => 'success'),
+                activeuiPage.locator('div.Toastify__toast-body').waitFor({ state: 'visible', timeout: 6000 }).then(() => 'error_toast'),
+                activeuiPage.locator('mat-dialog-container').waitFor({ state: 'visible', timeout: 6000 }).then(() => 'error_dialog')
             ]).catch(() => 'timeout');
 
             if (resVal === 'success') {
                 uidaiSolved = true;
                 const resOtp = await askTelegram(bot, chatId, stateTracker, "<blockquote>🔑 <b>Final Authorization:</b>\nProvide the UIDAI OTP:</blockquote>");
                 const otpMatch = String(resOtp.data).match(/\b\d{6}\b/);
-                await uiPage.locator('input[aria-label="Enter OTP"]').fill(otpMatch ? otpMatch[0] : resOtp.data.trim());
+                await activeuiPage.locator('input[aria-label="Enter OTP"]').fill(otpMatch ? otpMatch[0] : resOtp.data.trim());
                 
-                const downloadPromise = uiPage.waitForEvent('download', { timeout: 60000 });
-                await uiPage.locator('button:has-text("Verify & Download")').click();
+                const downloadPromise = activeuiPage.waitForEvent('download', { timeout: 60000 });
+                await activeuiPage.locator('button:has-text("Verify & Download")').click();
                 
                 const download = await downloadPromise;
                 const filePath = path.join(__dirname, `Aadhaar_${mobileNumber}.pdf`);
@@ -854,14 +862,14 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                     }
                 } else { throw new Error("PDF Decryption Failed"); }
             } else if (resVal === 'error_dialog') {
-                const errText = await uiPage.locator('mat-dialog-container').innerText();
+                const errText = await activeuiPage.locator('mat-dialog-container').innerText();
                 if (errText.toLowerCase().includes("rejected")) {
                     await bot.sendMessage(chatId, `<blockquote>⚠️ <b>Rejected:</b>\n${esc(errText.split('\n')[0])}</blockquote>`, { parse_mode: 'HTML' });
                     throw new Error("SILENT_ABORT");
                 }
-                await uiPage.locator('mat-dialog-container button').first().click().catch(()=>{});
-                await uiPage.locator('img[alt*="APTCHA"]').first().click().catch(()=>{});
-            } else { await uiPage.locator('img[alt*="APTCHA"]').first().click().catch(()=>{}); }
+                await activeuiPage.locator('mat-dialog-container button').first().click().catch(()=>{});
+                await activeuiPage.locator('img[alt*="APTCHA"]').first().click().catch(()=>{});
+            } else { await activeuiPage.locator('img[alt*="APTCHA"]').first().click().catch(()=>{}); }
         }
     } catch (e) {
         if (!e.message.includes("Cancelled_Silent")) {
