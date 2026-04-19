@@ -80,7 +80,7 @@ async function prepareContext() {
 
     const umUrl = "https://web.umang.gov.in/web_new/department?url=aadhar_new%2Fservice%2F60007&dept_id=17&dept_name=Retrieve%20EID%2FAadhaar%20Number&fromService=true";
 
-    await umPage.goto(umUrl, { waitUntil: 'networkidle', timeout: 120000 }).catch((e) => { console.warn('[POOL] umPage load failed:', e.message); });
+    await umPage.goto(umUrl, { waitUntil: 'domcontentloaded', timeout: 120000 }).catch((e) => { console.warn('[POOL] umPage load failed:', e.message.split('\n')[0]); });
 
     // uiPage is NOT pre-loaded — UIDAI blocks proxy during warmup.
     // It will be navigated fresh in executeTask when Phase 2 begins.
@@ -212,27 +212,28 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
             const stid_p2 = await sendStk(bot, chatId, 'PHASE2', settings);
             if (stid_p2 && userPageRegistry[sId]) userPageRegistry[sId].sentStickers.push(stid_p2);
             
-            // Wait for iframe element itself to be present & visible first
-            await umPage.waitForSelector('#myIframe', { state: 'visible', timeout: 60000 });
-
-            let frame = umPage.frameLocator('#myIframe');
-            // Retry iframe content load up to 3 times (reload page if iframe content stalls)
+            // Retry entire UMANG page load if iframe doesn't appear
+            let frame;
             let iframeReady = false;
-            for (let _attempt = 0; _attempt < 3; _attempt++) {
+            const umUrl = "https://web.umang.gov.in/web_new/department?url=aadhar_new%2Fservice%2F60007&dept_id=17&dept_name=Retrieve%20EID%2FAadhaar%20Number&fromService=true";
+
+            for (let _attempt = 0; _attempt < 4; _attempt++) {
                 try {
+                    if (_attempt > 0) {
+                        console.warn(`[UMANG] Page reload attempt ${_attempt + 1}...`);
+                        await umPage.goto(umUrl, { waitUntil: 'domcontentloaded', timeout: 90000 }).catch(() => {});
+                    }
+                    await umPage.waitForSelector('#myIframe', { state: 'visible', timeout: 45000 });
+                    frame = umPage.frameLocator('#myIframe');
                     await frame.locator('.ng-arrow-wrapper').first().waitFor({ state: 'visible', timeout: 40000 });
                     iframeReady = true;
                     break;
                 } catch (e) {
-                    if (_attempt < 2) {
-                        console.warn(`[IFRAME] Attempt ${_attempt + 1} failed, reloading UMANG page...`);
-                        await umPage.reload({ waitUntil: 'networkidle', timeout: 90000 }).catch(() => {});
-                        await umPage.waitForSelector('#myIframe', { state: 'visible', timeout: 30000 }).catch(() => {});
-                        frame = umPage.frameLocator('#myIframe');
-                    }
+                    console.warn(`[UMANG] Attempt ${_attempt + 1} failed: ${e.message.split('\n')[0]}`);
+                    if (_attempt === 3) throw new Error("UMANG page failed to load after 4 attempts. Check proxy/site.");
+                    await umPage.waitForTimeout(2000);
                 }
             }
-            if (!iframeReady) throw new Error("UMANG iframe failed to load after 3 attempts. Try again later.");
 
             await frame.locator('.ng-arrow-wrapper').first().click();
             await frame.locator('.ng-option:has-text("Enrollment ID")').click();
