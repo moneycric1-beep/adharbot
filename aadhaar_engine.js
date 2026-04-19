@@ -3,6 +3,11 @@ const fs = require('fs-extra');
 const path = require('path');
 const { spawn } = require('child_process');
 
+// ─── LokiProxy Indian Proxy ───────────────────────────────────────────────────
+// Set PROXY_URL in Railway env as: http://USER:PASS@host:port
+// e.g. http://USER773504-zone-custom-region-IN:PASSWORD@global.rp.lokiproxy.com:10000
+const PROXY_URL = process.env.PROXY_URL || null;
+
 const STICKERS_DEFAULT = {
     BOOTING: "CAACAgIAAxkBAAEL6VdmAe6pXqL3P2wZ6Z_0p6Q2Y_S7XgACRAADr8ZRGm9-vWj498_rNAQ",
     PHASE2: "CAACAgIAAxkBAAEL6VlmAe7F7R7_1zK_X96C7v8O8O5GQAACSAADr8ZRGm_F-G7M7_9kNAQ",
@@ -61,6 +66,14 @@ async function prepareContext() {
     const options = fs.existsSync(umSessionPath) ? { storageState: umSessionPath } : {};
     options.permissions = ['geolocation'];
     options.geolocation = { latitude: 28.6139, longitude: 77.2090 };
+
+    // Indian proxy via LokiProxy (set PROXY_URL in Railway env)
+    if (PROXY_URL) {
+        options.proxy = { server: PROXY_URL };
+        console.log('[PROXY] Using Indian proxy via LokiProxy');
+    } else {
+        console.warn('[PROXY] No PROXY_URL set, connecting directly');
+    }
     
     const context = await globalBrowser.newContext(options);
     const umPage = await context.newPage();
