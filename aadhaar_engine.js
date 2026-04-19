@@ -217,44 +217,112 @@ function getPoolStats() {
 // Handles UMANG login when session expired/missing — called from /umanglogin admin command
 async function doUmangLogin(umPage, bot, chatId, stateTracker) {
     console.log('[UMANG] Starting login flow...');
-    await bot.sendMessage(chatId, "<blockquote>🔄 <b>UMANG Login Required</b>\nPage load ho rahi hai...</blockquote>", { parse_mode: 'HTML' }).catch(() => {});
+    await bot.sendMessage(chatId, "<blockquote>🔄 <b>UMANG Login</b>\nPage load ho rahi hai...</blockquote>", { parse_mode: 'HTML' }).catch(() => {});
 
     const loginUrl = 'https://web.umang.gov.in/web_new/login';
-    await umPage.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await umPage.goto(loginUrl, { waitUntil: 'networkidle', timeout: 60000 });
 
-    // Enter mobile number
-    await umPage.waitForSelector('input[type="tel"], input[name="mobileNo"], input[id*="mobile"]', { timeout: 20000 });
-    const mobileInput = umPage.locator('input[type="tel"], input[name="mobileNo"], input[id*="mobile"]').first();
+    // Screenshot — actual page structure dekhne ke liye
+    const dbgPath = path.join(__dirname, `umang_login_debug.png`);
+    await umPage.screenshot({ path: dbgPath, fullPage: true }).catch(() => {});
+    if (fs.existsSync(dbgPath)) {
+        await bot.sendPhoto(chatId, dbgPath, { caption: '🔍 UMANG Login Page' }).catch(() => {});
+        fs.unlinkSync(dbgPath);
+    }
+
+    // Try all possible mobile input selectors
+    const mobileSelectors = [
+        'input[formcontrolname*="mobile"]',
+        'input[formcontrolname*="Mobile"]',
+        'input[placeholder*="Mobile"]',
+        'input[placeholder*="mobile"]',
+        'input[placeholder*="number"]',
+        'input[id*="mobile"]',
+        'input[name*="mobile"]',
+        'input[type="tel"]',
+        'input[type="number"]',
+        'input[type="text"]',
+        'input'
+    ];
+
+    let mobileInput = null;
+    for (const sel of mobileSelectors) {
+        const el = umPage.locator(sel).first();
+        const visible = await el.isVisible().catch(() => false);
+        if (visible) {
+            mobileInput = el;
+            console.log(`[UMANG] Mobile input found: ${sel}`);
+            break;
+        }
+    }
+    if (!mobileInput) throw new Error("Mobile input field nahi mila. Screenshot dekho upar.");
+
+    await mobileInput.click();
     await mobileInput.fill(UMANG_MOBILE || '');
+    await umPage.waitForTimeout(500);
 
-    // Click "Login with OTP" or similar
-    await umPage.locator('button:has-text("Login with OTP"), button:has-text("Get OTP"), a:has-text("Login with OTP")').first().click();
-
-    await bot.sendMessage(chatId, "<blockquote>🔑 <b>UMANG OTP Bhejo</b>\nOperator ke mobile pe OTP aaya hoga:</blockquote>", { parse_mode: 'HTML' }).catch(() => {});
+    // Click OTP button
+    const otpBtnSelectors = [
+        'button:has-text("Login with OTP")',
+        'button:has-text("Get OTP")',
+        'button:has-text("Send OTP")',
+        'a:has-text("Login with OTP")',
+        'span:has-text("Login with OTP")',
+        'button[type="submit"]',
+    ];
+    let clicked = false;
+    for (const sel of otpBtnSelectors) {
+        const el = umPage.locator(sel).first();
+        const visible = await el.isVisible().catch(() => false);
+        if (visible) { await el.click(); clicked = true; console.log(`[UMANG] OTP btn: ${sel}`); break; }
+    }
+    if (!clicked) throw new Error("OTP button nahi mila. Screenshot dekho upar.");
 
     const resOtp = await askTelegram(bot, chatId, stateTracker,
-        "<blockquote>📲 <b>UMANG OTP Enter Karo:</b></blockquote>",
+        "<blockquote>📲 <b>UMANG OTP Enter Karo</b>\n(Operator ke mobile pe aaya hoga):</blockquote>",
         'text', null, 180000
     );
     const otpVal = String(resOtp.data).match(/\b\d{4,6}\b/);
 
-    // Enter OTP
-    await umPage.waitForSelector('input[type="tel"][maxlength], input[name*="otp"], input[id*="otp"]', { timeout: 20000 });
-    const otpInput = umPage.locator('input[type="tel"][maxlength], input[name*="otp"], input[id*="otp"]').first();
-    await otpInput.fill(otpVal ? otpVal[0] : resOtp.data.trim());
-    await umPage.locator('button:has-text("Login"), button:has-text("Verify"), button:has-text("Submit"), button:has-text("Continue")').first().click();
+    await umPage.waitForTimeout(1000);
 
-    // Wait for redirect to dashboard/home
+    // OTP input selectors
+    const otpSelectors = [
+        'input[formcontrolname*="otp"]',
+        'input[formcontrolname*="Otp"]',
+        'input[placeholder*="OTP"]',
+        'input[maxlength="6"]',
+        'input[maxlength="4"]',
+        'input[type="number"]',
+        'input[type="tel"]',
+    ];
+    let otpInput = null;
+    for (const sel of otpSelectors) {
+        const el = umPage.locator(sel).first();
+        const visible = await el.isVisible().catch(() => false);
+        if (visible) { otpInput = el; console.log(`[UMANG] OTP input: ${sel}`); break; }
+    }
+    if (!otpInput) throw new Error("OTP input field nahi mila.");
+
+    await otpInput.fill(otpVal ? otpVal[0] : resOtp.data.trim());
+
+    const submitSelectors = ['button:has-text("Login")', 'button:has-text("Verify")', 'button:has-text("Submit")', 'button:has-text("Continue")', 'button[type="submit"]'];
+    for (const sel of submitSelectors) {
+        const el = umPage.locator(sel).first();
+        const visible = await el.isVisible().catch(() => false);
+        if (visible) { await el.click(); break; }
+    }
+
     await umPage.waitForURL(url => !url.toString().includes('/login'), { timeout: 30000 });
 
-    // Save session to PostgreSQL (persists across redeploys)
     const umSessionPath = path.join(__dirname, 'umang_session.json');
     const state = await umPage.context().storageState({ path: umSessionPath });
     await saveUmangSessionToDB(state);
 
-    await bot.sendMessage(chatId, "<blockquote>✅ <b>UMANG Login Successful!</b>\nSession save ho gayi — ab requests chalegi.</blockquote>", { parse_mode: 'HTML' }).catch(() => {});
+    await bot.sendMessage(chatId, "<blockquote>✅ <b>UMANG Login Successful!</b>\nSession PostgreSQL mein save ho gayi.</blockquote>", { parse_mode: 'HTML' }).catch(() => {});
     console.log('[UMANG] Login successful, session saved to DB.');
 }
+
 
 async function executeTask(bot, chatId, crackName, mobileNumber, searchName, stateTracker, updateProg, settings) {
     let poolEntry = null;
