@@ -63,23 +63,24 @@ async function initPool() {
 async function prepareContext() {
     const umSessionPath = path.join(__dirname, 'umang_session.json');
 
-    // Both UMANG and UIDAI need Indian proxy — Railway datacenter IPs are blocked by both
-    const baseOptions = { permissions: ['geolocation'], geolocation: { latitude: 28.6139, longitude: 77.2090 } };
-    if (PROXY_URL) {
-        baseOptions.proxy = { server: PROXY_URL };
-        console.log('[CONTEXT] Proxy enabled for both UMANG and UIDAI');
-    } else {
-        console.warn('[CONTEXT] No proxy set — Railway IPs may be blocked');
-    }
+    // UMANG: NO proxy — proxy blocks Angular JS bundles, causing blank page
+    // UIDAI: Indian proxy required for OTP/download
+    const baseGeo = { permissions: ['geolocation'], geolocation: { latitude: 28.6139, longitude: 77.2090 } };
 
-    // UMANG context (with session if available)
-    const umOptions = { ...baseOptions };
+    const umOptions = { ...baseGeo };
     if (fs.existsSync(umSessionPath)) umOptions.storageState = umSessionPath;
     const umContext = await globalBrowser.newContext(umOptions);
     const umPage = await umContext.newPage();
+    console.log('[CONTEXT] UMANG: direct (no proxy)');
 
-    // UIDAI context
-    const uiContext = await globalBrowser.newContext(baseOptions);
+    const uiOptions = { ...baseGeo };
+    if (PROXY_URL) {
+        uiOptions.proxy = { server: PROXY_URL };
+        console.log('[CONTEXT] UIDAI: proxy enabled');
+    } else {
+        console.warn('[CONTEXT] UIDAI: no proxy set');
+    }
+    const uiContext = await globalBrowser.newContext(uiOptions);
     const uiPage = await uiContext.newPage();
 
     const umUrl = "https://web.umang.gov.in/web_new/department?url=aadhar_new%2Fservice%2F60007&dept_id=17&dept_name=Retrieve%20EID%2FAadhaar%20Number&fromService=true";
@@ -241,10 +242,10 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                         throw new Error(`UMANG redirected: ${currentUrl}`);
                     }
 
-                    // Wait for iframe to attach first, then for Angular content inside
-                    await umPage.waitForSelector('#myIframe', { state: 'attached', timeout: 30000 });
+                    // Wait for iframe to attach (may not be 'visible' — Angular renders it hidden first)
+                    await umPage.waitForSelector('#myIframe', { state: 'attached', timeout: 60000 });
                     frame = umPage.frameLocator('#myIframe');
-                    await frame.locator('.ng-arrow-wrapper').first().waitFor({ state: 'visible', timeout: 60000 });
+                    await frame.locator('.ng-arrow-wrapper').first().waitFor({ state: 'visible', timeout: 90000 });
                     iframeReady = true;
                     break;
                 } catch (e) {
