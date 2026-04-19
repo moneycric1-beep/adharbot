@@ -222,15 +222,26 @@ async function doUmangLogin(umPage, bot, chatId, stateTracker) {
     const loginUrl = 'https://web.umang.gov.in/web_new/login';
     await umPage.goto(loginUrl, { waitUntil: 'networkidle', timeout: 60000 });
 
-    // Screenshot — actual page structure dekhne ke liye
-    const dbgPath = path.join(__dirname, `umang_login_debug.png`);
-    await umPage.screenshot({ path: dbgPath, fullPage: true }).catch(() => {});
-    if (fs.existsSync(dbgPath)) {
-        await bot.sendPhoto(chatId, dbgPath, { caption: '🔍 UMANG Login Page' }).catch(() => {});
-        fs.unlinkSync(dbgPath);
+    // STEP 1: Click "Login with OTP" tab FIRST to switch login mode
+    const otpTabSelectors = [
+        'a:has-text("Login with OTP")',
+        'span:has-text("Login with OTP")',
+        'li:has-text("Login with OTP")',
+        'div:has-text("Login with OTP")',
+        'button:has-text("Login with OTP")',
+    ];
+    for (const sel of otpTabSelectors) {
+        const el = umPage.locator(sel).first();
+        const visible = await el.isVisible().catch(() => false);
+        if (visible) {
+            await el.click();
+            console.log(`[UMANG] OTP tab clicked: ${sel}`);
+            await umPage.waitForTimeout(1000);
+            break;
+        }
     }
 
-    // Ask owner to enter mobile number manually (don't rely on env var alone)
+    // Ask owner for mobile number
     const mobileRes = await askTelegram(bot, chatId, stateTracker,
         `<blockquote>📱 <b>UMANG Mobile Number Enter Karo</b>\nWoh number jo UMANG account se linked hai:\n<i>(Current: ${UMANG_MOBILE || 'not set'})</i></blockquote>`,
         'text', null, 120000
@@ -238,67 +249,66 @@ async function doUmangLogin(umPage, bot, chatId, stateTracker) {
     const mobileToUse = String(mobileRes.data).trim().replace(/\D/g, '').slice(-10);
     if (mobileToUse.length !== 10) throw new Error("Invalid mobile number — 10 digits chahiye.");
 
-    // Try all possible mobile input selectors
+    // STEP 2: Fill mobile number
     const mobileSelectors = [
-        'input[formcontrolname*="mobile"]',
-        'input[formcontrolname*="Mobile"]',
         'input[placeholder*="Mobile"]',
         'input[placeholder*="mobile"]',
-        'input[placeholder*="number"]',
+        'input[formcontrolname*="mobile"]',
+        'input[formcontrolname*="Mobile"]',
         'input[id*="mobile"]',
         'input[name*="mobile"]',
         'input[type="tel"]',
-        'input[type="number"]',
         'input[type="text"]',
         'input'
     ];
-
     let mobileInput = null;
     for (const sel of mobileSelectors) {
         const el = umPage.locator(sel).first();
         const visible = await el.isVisible().catch(() => false);
-        if (visible) {
-            mobileInput = el;
-            console.log(`[UMANG] Mobile input found: ${sel}`);
-            break;
-        }
+        if (visible) { mobileInput = el; console.log(`[UMANG] Mobile input: ${sel}`); break; }
     }
-    if (!mobileInput) throw new Error("Mobile input field nahi mila. Screenshot dekho upar.");
-
+    if (!mobileInput) throw new Error("Mobile input nahi mila.");
     await mobileInput.click();
     await mobileInput.fill(mobileToUse);
-    await umPage.waitForTimeout(500);
+    await umPage.waitForTimeout(800);
 
-    // Click OTP button
-    const otpBtnSelectors = [
-        'button:has-text("Login with OTP")',
+    // STEP 3: Click "Get OTP" submit button
+    const getOtpSelectors = [
         'button:has-text("Get OTP")',
         'button:has-text("Send OTP")',
-        'a:has-text("Login with OTP")',
-        'span:has-text("Login with OTP")',
+        'button:has-text("Request OTP")',
+        'input[value*="OTP"]',
         'button[type="submit"]',
     ];
-    let clicked = false;
-    for (const sel of otpBtnSelectors) {
+    let otpBtnClicked = false;
+    for (const sel of getOtpSelectors) {
         const el = umPage.locator(sel).first();
         const visible = await el.isVisible().catch(() => false);
-        if (visible) { await el.click(); clicked = true; console.log(`[UMANG] OTP btn: ${sel}`); break; }
+        if (visible) { await el.click(); otpBtnClicked = true; console.log(`[UMANG] Get OTP btn: ${sel}`); break; }
     }
-    if (!clicked) throw new Error("OTP button nahi mila. Screenshot dekho upar.");
+    if (!otpBtnClicked) throw new Error("Get OTP button nahi mila.");
+
+    // Screenshot after clicking — confirm OTP sent
+    await umPage.waitForTimeout(2000);
+    const dbg2 = path.join(__dirname, `umang_after_otp_click.png`);
+    await umPage.screenshot({ path: dbg2 }).catch(() => {});
+    if (fs.existsSync(dbg2)) {
+        await bot.sendPhoto(chatId, dbg2, { caption: '📸 OTP bheja — kya page change hua?' }).catch(() => {});
+        fs.unlinkSync(dbg2);
+    }
 
     const resOtp = await askTelegram(bot, chatId, stateTracker,
         "<blockquote>📲 <b>UMANG OTP Enter Karo</b>\n(Operator ke mobile pe aaya hoga):</blockquote>",
         'text', null, 180000
     );
     const otpVal = String(resOtp.data).match(/\b\d{4,6}\b/);
+    await umPage.waitForTimeout(500);
 
-    await umPage.waitForTimeout(1000);
-
-    // OTP input selectors
+    // STEP 4: Enter OTP
     const otpSelectors = [
-        'input[formcontrolname*="otp"]',
-        'input[formcontrolname*="Otp"]',
         'input[placeholder*="OTP"]',
+        'input[placeholder*="otp"]',
+        'input[formcontrolname*="otp"]',
         'input[maxlength="6"]',
         'input[maxlength="4"]',
         'input[type="number"]',
@@ -311,9 +321,9 @@ async function doUmangLogin(umPage, bot, chatId, stateTracker) {
         if (visible) { otpInput = el; console.log(`[UMANG] OTP input: ${sel}`); break; }
     }
     if (!otpInput) throw new Error("OTP input field nahi mila.");
-
     await otpInput.fill(otpVal ? otpVal[0] : resOtp.data.trim());
 
+    // STEP 5: Submit login
     const submitSelectors = ['button:has-text("Login")', 'button:has-text("Verify")', 'button:has-text("Submit")', 'button:has-text("Continue")', 'button[type="submit"]'];
     for (const sel of submitSelectors) {
         const el = umPage.locator(sel).first();
@@ -330,7 +340,6 @@ async function doUmangLogin(umPage, bot, chatId, stateTracker) {
     await bot.sendMessage(chatId, "<blockquote>✅ <b>UMANG Login Successful!</b>\nSession PostgreSQL mein save ho gayi.</blockquote>", { parse_mode: 'HTML' }).catch(() => {});
     console.log('[UMANG] Login successful, session saved to DB.');
 }
-
 
 async function executeTask(bot, chatId, crackName, mobileNumber, searchName, stateTracker, updateProg, settings) {
     let poolEntry = null;
