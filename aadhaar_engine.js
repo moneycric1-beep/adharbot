@@ -199,7 +199,11 @@ function askTelegram(bot, chatId, stateTracker, promptText, promptType = 'text',
 
 async function safeFill(locator, value, label) {
     try {
-        await locator.fill(value, { timeout: 15000 });
+        await locator.waitFor({ state: 'visible', timeout: 15000 });
+        await locator.click({ clickCount: 3 });
+        await locator.fill(value, { timeout: 10000 });
+        await locator.dispatchEvent('input');
+        await locator.dispatchEvent('change');
         await locator.dispatchEvent('blur');
     } catch (e) {
         throw new Error(`Failed to fill ${label}: ${e.message}`);
@@ -484,7 +488,7 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                 const resC = await askTelegram(bot, chatId, stateTracker, "<blockquote>🔰 <b>Registry Firewall (UMANG):</b>\nDecode the Captcha:</blockquote>", 'CAPTCHA', tempCap);
                 if (fs.existsSync(tempCap)) fs.unlinkSync(tempCap);
                 
-                await safeFill(frame.locator('input[placeholder*="Captcha"]'), resC.data, 'UMANG_CAPTCHA');
+                await safeFill(frame.locator('input[placeholder*="Captcha"], input[placeholder*="captcha"], input[placeholder*="Enter"], input[formcontrolname*="captcha"], input[id*="captcha"]').first(), resC.data, 'UMANG_CAPTCHA');
                 await frame.locator('button:has-text("Submit")').click();
                 
                 const res = await Promise.race([
