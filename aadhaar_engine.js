@@ -607,11 +607,8 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                 }
                 console.log(`[UMANG] Inputs after submit (${inputInfo.length}): ${inputInfo.join(' | ')}`);
 
-                // OTP detection: captcha field disappears when OTP screen loads
-                // Check if captcha input is gone AND a new input appeared
-                const captchaStillVisible = await frame.locator('input[formcontrolname="captcha"], input#mat-input-4').first().isVisible().catch(() => false);
-                
-                // Strict OTP selectors — must NOT match captcha/name/mobile/email/dob
+                // OTP detection: UMANG shows OTP field alongside captcha (both visible at same time)
+                // Primary: check if formcontrolname="otp" input appeared (regardless of captcha)
                 const otpField = frame.locator([
                     'input[formcontrolname="otp"]',
                     'input[formcontrolname="Otp"]',
@@ -620,12 +617,14 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                     'input[placeholder*="otp"]',
                     'input[placeholder*="One Time"]',
                 ].join(', ')).first();
-                const otpVisible = !captchaStillVisible && await otpField.isVisible().catch(() => false);
-                
-                // Fallback: if captcha gone and there's exactly 1 input left, treat it as OTP
-                const otpFallback = !captchaStillVisible && allInputs.length === 1;
+                const otpVisible = await otpField.isVisible().catch(() => false);
+
+                const captchaStillVisible = await frame.locator('input[formcontrolname="captcha"], input#mat-input-4').first().isVisible().catch(() => false);
+
+                // Fallback: captcha gone and only 1 input left
+                const otpFallback = !captchaStillVisible && !otpVisible && allInputs.length === 1;
                 const otpFallbackField = otpFallback ? frame.locator('input:visible').first() : null;
-                
+
                 console.log(`[UMANG] captchaVisible=${captchaStillVisible} otpVisible=${otpVisible} fallback=${otpFallback}`);
 
                 if (!otpVisible && !otpFallback) {
@@ -646,9 +645,23 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                     const activeOtpField = otpVisible ? otpField : otpFallbackField;
                     const resOtp = await askTelegram(bot, chatId, stateTracker, "<blockquote>🔑 <b>Authorization Required:</b>\nProvide the 6-digit Portal OTP:</blockquote>");
                     const otpMatch = String(resOtp.data).match(/\b\d{4,6}\b/);
-                    await safeFill(activeOtpField, otpMatch ? otpMatch[0] : resOtp.data.trim(), 'UMANG_OTP');
-                    const submitBtn2 = frame.locator('button:has-text("Submit"), button:has-text("Verify"), button[type="submit"], button.btn-primary').first();
+                    const otpValue = otpMatch ? otpMatch[0] : resOtp.data.trim();
+                    // Click OTP field first to focus, then type
+                    await activeOtpField.click({ force: true }).catch(() => {});
+                    await umPage.waitForTimeout(300);
+                    await activeOtpField.fill('').catch(() => {});
+                    await umPage.keyboard.type(otpValue, { delay: 80 });
+                    console.log(`[UMANG] OTP typed: ${otpValue}`);
+                    await umPage.waitForTimeout(500);
+                    // Wait for Submit button to become enabled after OTP input
+                    const submitBtn2 = frame.locator('button:has-text("Submit"), button:has-text("Verify"), button[type="submit"]').first();
                     await submitBtn2.waitFor({ state: 'visible', timeout: 10000 });
+                    // Wait up to 5s for it to be enabled
+                    for (let i = 0; i < 10; i++) {
+                        const enabled = await submitBtn2.isEnabled().catch(() => false);
+                        if (enabled) break;
+                        await umPage.waitForTimeout(500);
+                    }
                     await submitBtn2.click({ force: true });
                     console.log('[UMANG] OTP Submit clicked');
                     
