@@ -682,13 +682,22 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
 
                     // PRIMARY: EID shown in success dialog — "Your Enrollment ID(EID) XXXX is sent..."
                     let eidDialogText = '';
-                    for (let t = 0; t < 8; t++) {
-                        eidDialogText = await frame.locator('text=/Enrollment ID/i').first().innerText().catch(() => '');
-                        if (!eidDialogText) eidDialogText = await frame.locator('[class*="dialog"], [class*="modal"], [role="dialog"]').first().innerText().catch(() => '');
+                    for (let t = 0; t < 10; t++) {
+                        // Try mat-dialog-content first (full dialog body)
+                        eidDialogText = await frame.locator('mat-dialog-content, .mat-dialog-content').first().innerText().catch(() => '');
+                        // Fallback: any role="dialog" container
+                        if (!eidDialogText) eidDialogText = await frame.locator('[role="dialog"]').first().innerText().catch(() => '');
+                        // Fallback: cdk-overlay-container (wraps all dialogs)
+                        if (!eidDialogText) eidDialogText = await frame.evaluate(() => {
+                            const el = document.querySelector('.cdk-overlay-container');
+                            return el ? el.innerText : '';
+                        }).catch(() => '');
+                        // Fallback: paragraph containing enrollment text
+                        if (!eidDialogText) eidDialogText = await frame.locator('p:has-text("Enrollment"), span:has-text("Enrollment"), div:has-text("Enrollment ID")').last().innerText().catch(() => '');
                         if (eidDialogText && eidDialogText.match(/\d{10,}/)) break;
-                        await umPage.waitForTimeout(3000);
+                        await umPage.waitForTimeout(2000);
                     }
-                    console.log(`[UMANG] Dialog text: ${eidDialogText}`);
+                    console.log(`[UMANG] Dialog text: ${eidDialogText.substring(0, 200)}`);
                     const dialogEidMatch = eidDialogText.match(/\b\d{12,28}\b/);
                     if (dialogEidMatch) {
                         profile.eid = dialogEidMatch[0];
