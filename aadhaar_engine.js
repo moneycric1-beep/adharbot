@@ -489,20 +489,27 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                 if (fs.existsSync(tempCap)) fs.unlinkSync(tempCap);
                 
                 await safeFill(frame.locator('input[placeholder*="Captcha"], input[placeholder*="captcha"], input[placeholder*="Enter"], input[formcontrolname*="captcha"], input[id*="captcha"]').first(), resC.data, 'UMANG_CAPTCHA');
-                await frame.locator('button:has-text("Submit")').click();
+
+                // Click submit — try multiple selectors, log which one works
+                const submitBtn = frame.locator('button:has-text("Submit"), button:has-text("Get OTP"), button[type="submit"], button.btn-primary, button.submit-btn').first();
+                await submitBtn.waitFor({ state: 'visible', timeout: 15000 });
+                await submitBtn.click({ force: true });
+                console.log('[UMANG] Captcha Submit clicked');
                 
                 const res = await Promise.race([
-                    frame.locator('input[placeholder*="OTP"]').waitFor({ state: 'visible', timeout: 8000 }).then(() => 'otp'),
-                    umPage.locator('div.Toastify__toast-body, .alert').waitFor({ state: 'visible', timeout: 5000 }).then(() => 'error'),
-                    umPage.locator('body').innerText().then(t => t.includes("No records found") ? 'no_records' : 'stay')
+                    frame.locator('input[placeholder*="OTP"], input[formcontrolname*="otp"], input[placeholder*="otp"]').first().waitFor({ state: 'visible', timeout: 10000 }).then(() => 'otp'),
+                    frame.locator('text=No records, text=Invalid captcha, text=invalid').first().waitFor({ state: 'visible', timeout: 6000 }).then(() => 'error'),
                 ]).catch(() => 'retry');
 
                 if (res === 'otp') {
                     umCaptchaSolved = true;
                     const resOtp = await askTelegram(bot, chatId, stateTracker, "<blockquote>🔑 <b>Authorization Required:</b>\nProvide the 6-digit Portal OTP:</blockquote>");
                     const otpMatch = String(resOtp.data).match(/\b\d{6}\b/);
-                    await safeFill(frame.locator('input[placeholder*="OTP"]'), otpMatch ? otpMatch[0] : resOtp.data.trim(), 'UMANG_OTP');
-                    await frame.locator('button:has-text("Submit")').click();
+                    await safeFill(frame.locator('input[placeholder*="OTP"], input[formcontrolname*="otp"]').first(), otpMatch ? otpMatch[0] : resOtp.data.trim(), 'UMANG_OTP');
+                    const submitBtn2 = frame.locator('button:has-text("Submit"), button:has-text("Verify"), button[type="submit"], button.btn-primary').first();
+                    await submitBtn2.waitFor({ state: 'visible', timeout: 10000 });
+                    await submitBtn2.click({ force: true });
+                    console.log('[UMANG] OTP Submit clicked');
                     
                     await frame.locator('td').first().waitFor({ timeout: 15000 });
                     const rows = await frame.locator('tr').all();
