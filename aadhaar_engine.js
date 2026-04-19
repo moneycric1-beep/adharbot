@@ -442,12 +442,10 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                 try {
                     if (_attempt > 0) {
                         console.warn(`[UMANG] Page reload attempt ${_attempt + 1}...`);
-                        await umPage.goto(umUrl, { waitUntil: 'networkidle', timeout: 90000 }).catch(() => {});
+                        await umPage.goto(umUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
                     } else {
-                        // First attempt: wait for networkidle on already-loaded page
-                        await umPage.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+                        await umPage.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
                     }
-                    // Debug: log current URL and page title
                     const currentUrl = umPage.url();
                     const title = await umPage.title().catch(() => '?');
                     console.log(`[UMANG] Attempt ${_attempt + 1} — URL: ${currentUrl} | Title: ${title}`);
@@ -456,16 +454,23 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                         throw new Error("UMANG session expired. Owner must run /umanglogin to re-authenticate.");
                     }
 
-                    // Wait for iframe to attach (may not be 'visible' — Angular renders it hidden first)
-                    await umPage.waitForSelector('#myIframe', { state: 'attached', timeout: 60000 });
+                    // CloudFront/CDN block detection
+                    if (title.toLowerCase().includes('error') || title.toLowerCase().includes('not be satisfied') || title.toLowerCase().includes('403') || title.toLowerCase().includes('blocked')) {
+                        console.warn(`[UMANG] CloudFront block detected (title: "${title}") — waiting 15s before retry...`);
+                        await umPage.waitForTimeout(15000);
+                        throw new Error(`CDN block: ${title}`);
+                    }
+
+                    // Wait for iframe
+                    await umPage.waitForSelector('#myIframe', { state: 'attached', timeout: 45000 });
                     frame = umPage.frameLocator('#myIframe');
-                    await frame.locator('.ng-arrow-wrapper').first().waitFor({ state: 'visible', timeout: 90000 });
+                    await frame.locator('.ng-arrow-wrapper').first().waitFor({ state: 'visible', timeout: 60000 });
                     iframeReady = true;
                     break;
                 } catch (e) {
                     console.warn(`[UMANG] Attempt ${_attempt + 1} failed: ${e.message.split('\n')[0]}`);
                     if (_attempt === 3) throw new Error("UMANG page failed to load after 4 attempts. Check proxy/site.");
-                    await umPage.waitForTimeout(3000);
+                    await umPage.waitForTimeout(5000);
                 }
             }
 
