@@ -386,8 +386,18 @@ async function doUmangLogin(umPage, bot, chatId, stateTracker) {
     const state = await umPage.context().storageState({ path: umSessionPath });
     await saveUmangSessionToDB(state);
 
-    await bot.sendMessage(chatId, "<blockquote>✅ <b>UMANG Login Successful!</b>\nSession PostgreSQL mein save ho gayi.</blockquote>", { parse_mode: 'HTML' }).catch(() => {});
-    console.log('[UMANG] Login successful, session saved to DB.');
+    // Flush old pool entries — they were created without this session
+    // New tasks will get fresh contexts that load the saved session
+    console.log('[UMANG] Flushing old pool entries to apply new session...');
+    for (const entry of [...pagePool]) {
+        try { await entry.umContext.close(); } catch(e) {}
+        try { await entry.uiContext.close(); } catch(e) {}
+    }
+    pagePool.length = 0;
+    refillPool().catch(() => {});
+
+    await bot.sendMessage(chatId, "<blockquote>✅ <b>UMANG Login Successful!</b>\nSession PostgreSQL mein save ho gayi.\nBot ready hai — ab search karo!</blockquote>", { parse_mode: 'HTML' }).catch(() => {});
+    console.log('[UMANG] Login successful, session saved to DB, pool refreshed.');
 }
 
 async function executeTask(bot, chatId, crackName, mobileNumber, searchName, stateTracker, updateProg, settings) {
