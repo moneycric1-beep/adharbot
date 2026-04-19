@@ -5,7 +5,29 @@ const { spawn } = require('child_process');
 const { Pool } = require('pg');
 
 // ─── LokiProxy Indian Proxy ───────────────────────────────────────────────────
+// Support both full URL (http://user:pass@host:port) and separate env vars
+const PROXY_SERVER   = process.env.PROXY_SERVER   || null;  // e.g. http://global.rp.lokiproxy.com:10000
+const PROXY_USER     = process.env.PROXY_USER     || null;  // e.g. USER773504-zone-custom-region-IN
+const PROXY_PASS     = process.env.PROXY_PASS     || null;  // e.g. Sameer786
+// Legacy single-URL fallback (kept for compatibility)
 const PROXY_URL = process.env.PROXY_URL || null;
+
+function buildProxy() {
+    if (PROXY_SERVER && PROXY_USER && PROXY_PASS) {
+        return { server: PROXY_SERVER, username: PROXY_USER, password: PROXY_PASS };
+    }
+    if (PROXY_URL) {
+        // Try to parse credentials from URL like http://user:pass@host:port
+        try {
+            const u = new URL(PROXY_URL);
+            if (u.username) return { server: `${u.protocol}//${u.host}`, username: decodeURIComponent(u.username), password: decodeURIComponent(u.password) };
+            return { server: PROXY_URL };
+        } catch(_) { return { server: PROXY_URL }; }
+    }
+    return null;
+}
+const PROXY_CONFIG = buildProxy();
+if (PROXY_CONFIG) console.log('[PROXY] Using Indian proxy via LokiProxy');
 const UMANG_MOBILE = process.env.UMANG_MOBILE || null;
 
 // ─── PostgreSQL for session persistence ──────────────────────────────────────
@@ -103,14 +125,14 @@ async function prepareContext() {
     const baseGeo = { permissions: ['geolocation'], geolocation: { latitude: 28.6139, longitude: 77.2090 } };
     const umOptions = { ...baseGeo };
     if (umSession) umOptions.storageState = umSession;
-    if (PROXY_URL) umOptions.proxy = { server: PROXY_URL };
+    if (PROXY_CONFIG) umOptions.proxy = PROXY_CONFIG;
     const umContext = await globalBrowser.newContext(umOptions);
     const umPage = await umContext.newPage();
 
     // UIDAI: Indian proxy required
     const uiOptions = { ...baseGeo };
-    if (PROXY_URL) {
-        uiOptions.proxy = { server: PROXY_URL };
+    if (PROXY_CONFIG) {
+        uiOptions.proxy = PROXY_CONFIG;
     }
     const uiContext = await globalBrowser.newContext(uiOptions);
     const uiPage = await uiContext.newPage();
