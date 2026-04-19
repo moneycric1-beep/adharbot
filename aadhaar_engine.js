@@ -678,54 +678,46 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                     await submitBtn2.click({ force: true });
                     console.log('[UMANG] OTP Submit clicked');
                     
-                    // Wait for result — either table appears or error message
                     await umPage.waitForTimeout(3000);
-                    // Try waiting for table up to 30s
-                    const tdLocator = frame.locator('td').first();
-                    let tableAppeared = false;
-                    for (let t = 0; t < 6; t++) {
-                        tableAppeared = await tdLocator.isVisible().catch(() => false);
-                        if (tableAppeared) break;
-                        await umPage.waitForTimeout(5000);
+
+                    // PRIMARY: EID shown in success dialog — "Your Enrollment ID(EID) XXXX is sent..."
+                    let eidDialogText = '';
+                    for (let t = 0; t < 8; t++) {
+                        eidDialogText = await frame.locator('text=/Enrollment ID/i').first().innerText().catch(() => '');
+                        if (!eidDialogText) eidDialogText = await frame.locator('[class*="dialog"], [class*="modal"], [role="dialog"]').first().innerText().catch(() => '');
+                        if (eidDialogText && eidDialogText.match(/\d{10,}/)) break;
+                        await umPage.waitForTimeout(3000);
                     }
-                    if (!tableAppeared) {
-                        // Take screenshot for debugging
+                    console.log(`[UMANG] Dialog text: ${eidDialogText}`);
+                    const dialogEidMatch = eidDialogText.match(/\b\d{12,28}\b/);
+                    if (dialogEidMatch) {
+                        profile.eid = dialogEidMatch[0];
+                        console.log(`[UMANG] EID found in dialog: ${profile.eid}`);
+                        // Close the dialog
+                        const closeDialogBtn2 = frame.locator('button:has-text("Close"), button:has-text("OK")').first();
+                        await closeDialogBtn2.click({ force: true }).catch(() => {});
+                    }
+
+                    // FALLBACK: check table
+                    if (!profile.eid) {
+                        const tdVisible = await frame.locator('td').first().isVisible().catch(() => false);
+                        if (tdVisible) {
+                            const tableText = await frame.locator('table').first().innerText().catch(() => '');
+                            console.log(`[UMANG] Table text: ${tableText}`);
+                            const tableEid = tableText.match(/\b\d{12,28}\b/);
+                            if (tableEid) profile.eid = tableEid[0];
+                        }
+                    }
+
+                    if (!profile.eid) {
                         const dbgPath2 = path.join(__dirname, `umang_otp_result_${chatId}.png`);
                         await umPage.screenshot({ path: dbgPath2 }).catch(() => {});
                         if (fs.existsSync(dbgPath2)) {
-                            await bot.sendPhoto(chatId, dbgPath2, { caption: '<blockquote>⚠️ Result table not found after OTP submit</blockquote>', parse_mode: 'HTML' }).catch(() => {});
+                            await bot.sendPhoto(chatId, dbgPath2, { caption: '<blockquote>⚠️ EID not found after OTP submit</blockquote>', parse_mode: 'HTML' }).catch(() => {});
                             fs.unlinkSync(dbgPath2);
                         }
-                        throw new Error("Result table not found after OTP submit");
+                        throw new Error("EID not found after OTP submit");
                     }
-                    const rows = await frame.locator('tr').all();
-                    for (const row of rows) {
-                        const txt = await row.innerText().catch(() => '');
-                        if (txt.trim().length < 3) continue;
-                        const cells = await row.locator('td').all();
-                        if (cells.length >= 2) {
-                            // EID is typically a long numeric string (28 digits) or shorter
-                            const cell1 = (await cells[0].innerText().catch(() => '')).trim();
-                            const cell2 = (await cells[1].innerText().catch(() => '')).trim();
-                            console.log(`[UMANG] Row: "${cell1}" | "${cell2}"`);
-                            // EID/Aadhaar number is usually in cell1 or cell2
-                            const eidMatch = (cell1 + ' ' + cell2).match(/\b\d{12,28}\b/);
-                            if (eidMatch) { profile.eid = eidMatch[0]; break; }
-                            // Fallback: if name matches, take next cell
-                            if (txt.toLowerCase().includes(searchName.split(' ')[0].toLowerCase())) {
-                                profile.eid = cell2 || cell1;
-                                break;
-                            }
-                        }
-                    }
-                    if (!profile.eid) {
-                        // Last resort: grab all text from table
-                        const tableText = await frame.locator('table').first().innerText().catch(() => '');
-                        console.log(`[UMANG] Full table text: ${tableText}`);
-                        const anyEid = tableText.match(/\b\d{12,28}\b/);
-                        if (anyEid) profile.eid = anyEid[0];
-                    }
-                    if (!profile.eid) throw new Error("EID not found in table");
                 } else {
                     // captcha still visible = wrong captcha or form error — retry loop
                     await umPage.waitForTimeout(1000);
