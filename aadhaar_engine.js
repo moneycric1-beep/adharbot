@@ -4,20 +4,20 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { Pool } = require('pg');
 
-// ─── Oxylabs Indian Datacenter Proxy (rotating ports) ────────────────────────
-const PROXY_USER = process.env.PROXY_USER || null;
-const PROXY_PASS = process.env.PROXY_PASS || null;
-
-// Oxylabs Indian DC ports — rotated randomly per request for IP variety
-const OXYLABS_PORTS = [8001,8002,8003,8004,8005,8006,8007,8008,8009,8010];
+// ─── Proxy Configuration (supports any proxy via env vars) ───────────────────
+// Set PROXY_SERVER=http://host:port, PROXY_USER=user, PROXY_PASS=pass in Railway
+const PROXY_SERVER = process.env.PROXY_SERVER || null;
+const PROXY_USER   = process.env.PROXY_USER   || null;
+const PROXY_PASS   = process.env.PROXY_PASS   || null;
 
 function buildProxy() {
-    if (!PROXY_USER || !PROXY_PASS) return null;
-    const port = OXYLABS_PORTS[Math.floor(Math.random() * OXYLABS_PORTS.length)];
-    return { server: `http://dc.oxylabs.io:${port}`, username: PROXY_USER, password: PROXY_PASS };
+    if (PROXY_SERVER && PROXY_USER && PROXY_PASS) {
+        return { server: PROXY_SERVER, username: PROXY_USER, password: PROXY_PASS };
+    }
+    return null;
 }
 const PROXY_CONFIG = buildProxy();
-if (PROXY_CONFIG) console.log(`[PROXY] Using Oxylabs Indian DC proxy`);
+if (PROXY_CONFIG) console.log(`[PROXY] Proxy configured: ${PROXY_CONFIG.server}`);
 const UMANG_MOBILE = process.env.UMANG_MOBILE || null;
 
 // ─── PostgreSQL for session persistence ──────────────────────────────────────
@@ -718,33 +718,45 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
         const uiUrl = "https://myaadhaar.uidai.gov.in/genricDownloadAadhaar/en";
         let uiLoaded = false;
         let activeuiPage = uiPage;
-        // Block heavy resources to speed up load over proxy
-        await activeuiPage.route('**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf,eot,ico}', r => r.abort()).catch(() => {});
+
+        // Helper to create a fresh page with given proxy (or no proxy)
+        async function makeFreshUiPage(proxyConfig) {
+            const ctx = await globalBrowser.newContext({
+                permissions: ['geolocation'],
+                geolocation: { latitude: 28.6139, longitude: 77.2090 },
+                ...(proxyConfig ? { proxy: proxyConfig } : {})
+            });
+            const pg = await ctx.newPage();
+            // Block heavy resources to speed up load
+            await pg.route('**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf,eot,ico,mp4,webm}', r => r.abort()).catch(() => {});
+            return pg;
+        }
+
+        // Strategy: attempt 1-2 = no proxy (Railway direct), attempt 3-5 = with proxy
         for (let _ui = 0; _ui < 5; _ui++) {
+            const useProxy = _ui >= 2;
             try {
-                await activeuiPage.goto(uiUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
+                if (_ui > 0) {
+                    activeuiPage = await makeFreshUiPage(useProxy ? PROXY_CONFIG : null);
+                    console.log(`[UIDAI] Attempt ${_ui + 1} — proxy=${useProxy}`);
+                } else {
+                    await activeuiPage.route('**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf,eot,ico,mp4,webm}', r => r.abort()).catch(() => {});
+                }
+                // Use 'commit' first (fastest — just needs server to start responding)
+                await activeuiPage.goto(uiUrl, { waitUntil: 'commit', timeout: 60000 });
+                // Then wait for Angular app to render the EID radio button
+                await activeuiPage.waitForSelector('input[value="eid"], input[name="eid"], #eid', { timeout: 60000 });
                 uiLoaded = true;
+                console.log(`[UIDAI] Page loaded on attempt ${_ui + 1}`);
                 break;
             } catch (e) {
-                console.warn(`[UIDAI] Page load attempt ${_ui + 1} failed: ${e.message.split('\n')[0]}`);
-                if (_ui >= 4) throw new Error("UIDAI site failed to load after 5 attempts. Check proxy or try later.");
-                // Create a fresh context+page with a new proxy port on retry
-                try {
-                    const freshProxy = buildProxy();
-                    const freshCtx = await globalBrowser.newContext({ 
-                        permissions: ['geolocation'], 
-                        geolocation: { latitude: 28.6139, longitude: 77.2090 },
-                        proxy: freshProxy 
-                    });
-                    activeuiPage = await freshCtx.newPage();
-                    await activeuiPage.route('**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf,eot,ico}', r => r.abort()).catch(() => {});
-                    console.log(`[UIDAI] Retry with proxy port: ${freshProxy?.server}`);
-                } catch (ne) { /* use old page */ }
-                await activeuiPage.waitForTimeout(5000);
+                console.warn(`[UIDAI] Attempt ${_ui + 1} failed: ${e.message.split('\n')[0]}`);
+                if (_ui >= 4) throw new Error("UIDAI site failed to load after 5 attempts. Try again later.");
+                await new Promise(r => setTimeout(r, 3000));
             }
         }
 
-        await activeuiPage.waitForSelector('input[value="eid"]', { timeout: 30000 });
+        // Page is already loaded (waitForSelector done in loop above)
         await activeuiPage.evaluate(async (rawEID) => {
             function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
             function setNativeValue(el, val) {
