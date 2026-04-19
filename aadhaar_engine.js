@@ -490,21 +490,42 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                     'text', null, 120000
                 );
                 const dobRaw = String(resDob.data).trim();
-                // Normalize to MM/DD/YYYY for Angular Material datepicker
+                // Angular Material datepicker format: MM/DD/YYYY
                 const dobParts = dobRaw.split('/');
-                let dobForInput = dobRaw;
-                if (dobParts.length === 3) dobForInput = `${dobParts[1]}/${dobParts[0]}/${dobParts[2]}`; // DD/MM/YYYY → MM/DD/YYYY
+                let mm = dobParts[1] || '01', dd = dobParts[0] || '01', yyyy = dobParts[2] || '1990';
+                const dobForInput = `${mm}/${dd}/${yyyy}`; // MM/DD/YYYY
+                
                 const dobEl = dobFieldCheck.first();
-                await dobEl.click();
-                await umPage.keyboard.type(dobForInput, { delay: 80 });
-                await umPage.keyboard.press('Escape'); // close datepicker popup
-                await umPage.waitForTimeout(300);
-                await umPage.keyboard.press('Tab');
+                
+                // Method 1: Try direct fill via nativeInputValueSetter
+                const filled = await frame.evaluate(({ selector, value }) => {
+                    const el = document.querySelector(selector);
+                    if (!el) return false;
+                    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                    nativeSetter.call(el, value);
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    el.dispatchEvent(new Event('blur', { bubbles: true }));
+                    return true;
+                }, { selector: 'input[formcontrolname="dob"], input#mat-input-3', value: dobForInput }).catch(() => false);
+                
+                if (!filled) {
+                    // Method 2: click + type digit by digit (Angular datepicker segments)
+                    await dobEl.click({ force: true });
+                    await umPage.waitForTimeout(300);
+                    // Type MM DD YYYY separately with Tab between
+                    await umPage.keyboard.type(mm, { delay: 100 });
+                    await umPage.keyboard.press('Tab');
+                    await umPage.keyboard.type(dd, { delay: 100 });
+                    await umPage.keyboard.press('Tab');
+                    await umPage.keyboard.type(yyyy, { delay: 100 });
+                }
+                await umPage.keyboard.press('Escape');
                 await umPage.waitForTimeout(500);
-                // Click elsewhere to ensure datepicker is dismissed
-                await frame.locator('body').click({ position: { x: 10, y: 10 }, force: true }).catch(() => {});
-                await umPage.waitForTimeout(300);
-                console.log(`[UMANG] DOB filled: ${dobForInput}`);
+                
+                // Verify DOB was accepted
+                const dobValue = await dobEl.inputValue().catch(() => '');
+                console.log(`[UMANG] DOB filled: ${dobForInput} | Input value: "${dobValue}"`);
             }
 
             // Email is optional — skip it
