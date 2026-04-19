@@ -24,9 +24,8 @@ const userPageRegistry = {};
 async function forceKillUser(chatId) {
     const entry = userPageRegistry[chatId];
     if (entry) {
-        if (entry.context) {
-            try { await entry.context.close(); } catch(e) {}
-        }
+        try { await entry.umContext.close(); } catch(e) {}
+        try { await entry.uiContext.close(); } catch(e) {}
     }
     delete userPageRegistry[chatId];
 }
@@ -63,30 +62,31 @@ async function initPool() {
 
 async function prepareContext() {
     const umSessionPath = path.join(__dirname, 'umang_session.json');
-    const options = fs.existsSync(umSessionPath) ? { storageState: umSessionPath } : {};
-    options.permissions = ['geolocation'];
-    options.geolocation = { latitude: 28.6139, longitude: 77.2090 };
 
-    // Indian proxy via LokiProxy (set PROXY_URL in Railway env)
+    // UMANG context — NO proxy (UMANG blocks datacenter proxies)
+    const umOptions = fs.existsSync(umSessionPath) ? { storageState: umSessionPath } : {};
+    umOptions.permissions = ['geolocation'];
+    umOptions.geolocation = { latitude: 28.6139, longitude: 77.2090 };
+    const umContext = await globalBrowser.newContext(umOptions);
+    const umPage = await umContext.newPage();
+    console.log('[CONTEXT] UMANG context: direct (no proxy)');
+
+    // UIDAI context — Indian proxy required
+    const uiOptions = { permissions: ['geolocation'], geolocation: { latitude: 28.6139, longitude: 77.2090 } };
     if (PROXY_URL) {
-        options.proxy = { server: PROXY_URL };
-        console.log('[PROXY] Using Indian proxy via LokiProxy');
+        uiOptions.proxy = { server: PROXY_URL };
+        console.log('[CONTEXT] UIDAI context: proxy enabled');
     } else {
-        console.warn('[PROXY] No PROXY_URL set, connecting directly');
+        console.warn('[CONTEXT] UIDAI context: no proxy set');
     }
-    
-    const context = await globalBrowser.newContext(options);
-    const umPage = await context.newPage();
+    const uiContext = await globalBrowser.newContext(uiOptions);
+    const uiPage = await uiContext.newPage();
 
     const umUrl = "https://web.umang.gov.in/web_new/department?url=aadhar_new%2Fservice%2F60007&dept_id=17&dept_name=Retrieve%20EID%2FAadhaar%20Number&fromService=true";
-
     await umPage.goto(umUrl, { waitUntil: 'domcontentloaded', timeout: 120000 }).catch((e) => { console.warn('[POOL] umPage load failed:', e.message.split('\n')[0]); });
 
-    // uiPage is NOT pre-loaded — UIDAI blocks proxy during warmup.
-    // It will be navigated fresh in executeTask when Phase 2 begins.
-    const uiPage = await context.newPage();
-
-    return { context, umPage, uiPage, busy: false };
+    // uiPage loaded lazily in Phase 2
+    return { umContext, uiContext, umPage, uiPage, busy: false };
 }
 
 async function refillPool() {
@@ -120,9 +120,8 @@ async function acquirePage() {
 }
 
 async function releasePage(entry) {
-    try {
-        await entry.context.close();
-    } catch(e) {}
+    try { await entry.umContext.close(); } catch(e) {}
+    try { await entry.uiContext.close(); } catch(e) {}
     const idx = pagePool.indexOf(entry);
     if (idx > -1) pagePool.splice(idx, 1);
     refillPool().catch(()=>{});
