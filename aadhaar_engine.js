@@ -121,10 +121,12 @@ async function prepareContext() {
         umSession = JSON.parse(fs.readFileSync(umSessionPath, 'utf8'));
     }
 
-    // UMANG: NO proxy — Railway IPs can reach UMANG directly; proxy causes load timeout
+    // UMANG: needs residential Indian proxy — CloudFront blocks Railway datacenter IPs
+    // Proxy format is now fixed (separate server/username/password) so no more Invalid URL error
     const baseGeo = { permissions: ['geolocation'], geolocation: { latitude: 28.6139, longitude: 77.2090 } };
     const umOptions = { ...baseGeo };
     if (umSession) umOptions.storageState = umSession;
+    if (PROXY_CONFIG) umOptions.proxy = PROXY_CONFIG;
     const umContext = await globalBrowser.newContext(umOptions);
     const umPage = await umContext.newPage();
 
