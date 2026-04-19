@@ -578,7 +578,22 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                 console.log('[UMANG] Captcha Submit clicked');
 
                 // Wait for page to respond after submit
-                await umPage.waitForTimeout(4000);
+                await umPage.waitForTimeout(3000);
+
+                // Check for captcha timeout/error dialog (has a "Close" button)
+                const closeDialogBtn = frame.locator('button:has-text("Close")').first();
+                if (await closeDialogBtn.isVisible().catch(() => false)) {
+                    console.log('[UMANG] Captcha error dialog detected — closing and refreshing captcha');
+                    await closeDialogBtn.click({ force: true });
+                    await umPage.waitForTimeout(1000);
+                    // Click Reset to refresh captcha image
+                    const resetBtn = frame.locator('button:has-text("Reset")').first();
+                    if (await resetBtn.isVisible().catch(() => false)) {
+                        await resetBtn.click({ force: true });
+                        await umPage.waitForTimeout(2000);
+                    }
+                    continue; // Go back to top of while loop — fresh captcha screenshot
+                }
 
                 // Log all visible inputs for debugging
                 const allInputs = await frame.locator('input:visible').all();
