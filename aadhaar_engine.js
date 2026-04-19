@@ -580,14 +580,21 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                 await submitBtn.click({ force: true });
                 console.log('[UMANG] Captcha Submit clicked');
 
-                // Wait for page to respond after submit
-                await umPage.waitForTimeout(3000);
+                // Wait for EITHER OTP field to appear OR error dialog — whichever comes first
+                const afterSubmitResult = await Promise.race([
+                    frame.locator('input[formcontrolname="otp"], input[formcontrolname="Otp"], input[formcontrolname="OTP"]').first()
+                        .waitFor({ state: 'visible', timeout: 20000 }).then(() => 'otp'),
+                    frame.locator('button:has-text("Close")').first()
+                        .waitFor({ state: 'visible', timeout: 20000 }).then(() => 'dialog'),
+                ]).catch(() => 'timeout');
+
+                console.log(`[UMANG] After submit result: ${afterSubmitResult}`);
+                await umPage.waitForTimeout(500);
 
                 // Check for captcha timeout/error dialog (has a "Close" button)
-                const closeDialogBtn = frame.locator('button:has-text("Close")').first();
-                if (await closeDialogBtn.isVisible().catch(() => false)) {
+                if (afterSubmitResult === 'dialog' || await frame.locator('button:has-text("Close")').first().isVisible().catch(() => false)) {
                     console.log('[UMANG] Captcha error dialog detected — closing and refreshing captcha');
-                    await closeDialogBtn.click({ force: true });
+                    await frame.locator('button:has-text("Close")').first().click({ force: true }).catch(() => {});
                     await umPage.waitForTimeout(1000);
                     // Click Reset to refresh captcha image
                     const resetBtn = frame.locator('button:has-text("Reset")').first();
@@ -598,20 +605,7 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                     continue; // Go back to top of while loop — fresh captcha screenshot
                 }
 
-                // Log all visible inputs for debugging
-                const allInputs = await frame.locator('input:visible').all();
-                const inputInfo = [];
-                for (const inp of allInputs) {
-                    const ph = await inp.getAttribute('placeholder').catch(() => '');
-                    const fc = await inp.getAttribute('formcontrolname').catch(() => '');
-                    const id = await inp.getAttribute('id').catch(() => '');
-                    const ml = await inp.getAttribute('maxlength').catch(() => '');
-                    inputInfo.push(`ph="${ph}" fc="${fc}" id="${id}" ml="${ml}"`);
-                }
-                console.log(`[UMANG] Inputs after submit (${inputInfo.length}): ${inputInfo.join(' | ')}`);
-
-                // OTP detection: UMANG shows OTP field alongside captcha (both visible at same time)
-                // Primary: check if formcontrolname="otp" input appeared (regardless of captcha)
+                // OTP detection: if afterSubmitResult==='otp' we already know it's there
                 const otpField = frame.locator([
                     'input[formcontrolname="otp"]',
                     'input[formcontrolname="Otp"]',
@@ -619,29 +613,18 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                     'input[placeholder*="OTP"]',
                     'input[placeholder*="otp"]',
                     'input[placeholder*="One Time"]',
+                    'input#mat-input-5',
                 ].join(', ')).first();
-                const otpVisible = await otpField.isVisible().catch(() => false);
+                const otpVisible = afterSubmitResult === 'otp' || await otpField.isVisible().catch(() => false);
 
                 const captchaStillVisible = await frame.locator('input[formcontrolname="captcha"], input#mat-input-4').first().isVisible().catch(() => false);
 
                 // Fallback: captcha gone and only 1 input left
+                const allInputs = await frame.locator('input:visible').all();
                 const otpFallback = !captchaStillVisible && !otpVisible && allInputs.length === 1;
                 const otpFallbackField = otpFallback ? frame.locator('input:visible').first() : null;
 
                 console.log(`[UMANG] captchaVisible=${captchaStillVisible} otpVisible=${otpVisible} fallback=${otpFallback}`);
-
-                if (!otpVisible && !otpFallback) {
-                    // Still on same screen — send screenshot for debugging
-                    const dbgPath = path.join(__dirname, `umang_after_submit_${chatId}.png`);
-                    await umPage.screenshot({ path: dbgPath, fullPage: false }).catch(() => {});
-                    if (fs.existsSync(dbgPath)) {
-                        await bot.sendPhoto(chatId, dbgPath, {
-                            caption: `<blockquote>🔍 <b>Debug:</b> captcha=${captchaStillVisible} inputs=${inputInfo.length}\n<code>${inputInfo.join('\n')}</code></blockquote>`,
-                            parse_mode: 'HTML'
-                        }).catch(() => {});
-                        fs.unlinkSync(dbgPath);
-                    }
-                }
 
                 if (otpVisible || otpFallback) {
                     umCaptchaSolved = true;
