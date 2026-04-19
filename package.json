@@ -1,0 +1,20 @@
+{
+  "name": "aadhar-bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node bot.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "fs-extra": "^11.3.4",
+    "node-telegram-bot-api": "^0.67.0",
+    "pg": "^8.13.3",
+    "playwright": "^1.59.1"
+  }
+}

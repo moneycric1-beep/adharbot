@@ -1,0 +1,5 @@
+node_modules/
+database/bot_db.json
+bot.pid
+.env
+*.log
