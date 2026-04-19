@@ -70,7 +70,7 @@ async function prepareContext() {
     const uiUrl = "https://myaadhaar.uidai.gov.in/genricDownloadAadhaar/en";
 
     await Promise.all([
-        umPage.goto(umUrl, { waitUntil: 'domcontentloaded', timeout: 120000 }).catch(()=>{}),
+        umPage.goto(umUrl, { waitUntil: 'networkidle', timeout: 120000 }).catch(()=>{}),
         uiPage.goto(uiUrl, { waitUntil: 'domcontentloaded', timeout: 120000 }).catch(()=>{})
     ]);
 
@@ -201,6 +201,7 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
             if (stid_p2 && userPageRegistry[sId]) userPageRegistry[sId].sentStickers.push(stid_p2);
             
             let frame = umPage.frameLocator('#myIframe');
+            await frame.locator('.ng-arrow-wrapper').first().waitFor({ state: 'visible', timeout: 90000 });
             await frame.locator('.ng-arrow-wrapper').first().click();
             await frame.locator('.ng-option:has-text("Enrollment ID")').click();
             
@@ -253,6 +254,7 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                 } else {
                     await umPage.reload(); // Hard Refresh
                     frame = umPage.frameLocator('#myIframe');
+                    await frame.locator('.ng-arrow-wrapper').first().waitFor({ state: 'visible', timeout: 90000 });
                     await frame.locator('.ng-arrow-wrapper').first().click();
                     await frame.locator('.ng-option:has-text("Enrollment ID")').click();
                     await safeFill(frame.locator('input#mat-input-0'), searchName, 'UMANG_NAME');
