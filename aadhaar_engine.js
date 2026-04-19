@@ -481,22 +481,28 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
             await safeFill(frame.locator('input#mat-input-0, input[formcontrolname="name"]').first(), searchName, 'UMANG_NAME');
             await safeFill(frame.locator('input#mat-input-1, input[formcontrolname="mobileNo"]').first(), safeNum, 'UMANG_MOBILE');
 
-            // Fill email if present (optional field — use dummy if required)
-            const emailField = frame.locator('input[formcontrolname="email"], input#mat-input-2');
-            const emailVisible = await emailField.first().isVisible().catch(() => false);
-            if (emailVisible) {
-                const emailVal = await emailField.first().inputValue().catch(() => '');
-                if (!emailVal) await safeFill(emailField.first(), 'test@gmail.com', 'UMANG_EMAIL').catch(() => {});
-            }
-
-            // Fill dob if present
-            const dobField = frame.locator('input[formcontrolname="dob"], input#mat-input-3');
-            const dobVisible = await dobField.first().isVisible().catch(() => false);
+            // DOB is required — ask user
+            const dobFieldCheck = frame.locator('input[formcontrolname="dob"], input#mat-input-3');
+            const dobVisible = await dobFieldCheck.first().isVisible().catch(() => false);
             if (dobVisible) {
-                const dobVal = await dobField.first().inputValue().catch(() => '');
-                if (!dobVal) await safeFill(dobField.first(), '01/01/1990', 'UMANG_DOB').catch(() => {});
+                const resDob = await askTelegram(bot, chatId, stateTracker,
+                    "<blockquote>📅 <b>Date of Birth Enter Karo</b>\nFormat: <code>DD/MM/YYYY</code>\n(Jis person ka Aadhaar dhundna hai uski DOB)</blockquote>",
+                    'text', null, 120000
+                );
+                const dobRaw = String(resDob.data).trim();
+                // Normalize to MM/DD/YYYY for Angular Material datepicker
+                const dobParts = dobRaw.split('/');
+                let dobForInput = dobRaw;
+                if (dobParts.length === 3) dobForInput = `${dobParts[1]}/${dobParts[0]}/${dobParts[2]}`; // DD/MM/YYYY → MM/DD/YYYY
+                const dobEl = dobFieldCheck.first();
+                await dobEl.click();
+                await umPage.keyboard.type(dobForInput, { delay: 80 });
+                await umPage.keyboard.press('Tab');
+                await umPage.waitForTimeout(500);
+                console.log(`[UMANG] DOB filled: ${dobForInput}`);
             }
 
+            // Email is optional — skip it
             let umCaptchaSolved = false;
             while (!umCaptchaSolved) {
                 checkAbort();
@@ -511,8 +517,8 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                 
                 await safeFill(frame.locator('input[formcontrolname="captcha"], input#mat-input-4').first(), resC.data, 'UMANG_CAPTCHA');
 
-                // Click submit
-                const submitBtn = frame.locator('button:has-text("Submit"), button:has-text("Get OTP"), button[type="submit"], button.btn-primary').first();
+                // Click "Send OTP" / "Submit" button
+                const submitBtn = frame.locator('button:has-text("Send OTP"), button:has-text("Get OTP"), button:has-text("Submit"), button[type="submit"], button.btn-primary').first();
                 await submitBtn.waitFor({ state: 'visible', timeout: 15000 });
                 await submitBtn.click({ force: true });
                 console.log('[UMANG] Captcha Submit clicked');
