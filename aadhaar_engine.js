@@ -220,32 +220,37 @@ async function doUmangLogin(umPage, bot, chatId, stateTracker) {
     await bot.sendMessage(chatId, "<blockquote>🔄 <b>UMANG Login</b>\nPage load ho rahi hai...</blockquote>", { parse_mode: 'HTML' }).catch(() => {});
 
     const loginUrl = 'https://web.umang.gov.in/web_new/login';
-    await umPage.goto(loginUrl, { waitUntil: 'networkidle', timeout: 60000 });
+    await umPage.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-    // Ask owner for mobile number
+    // Wait for Angular to render the login form (up to 20s)
+    const mobileSelectors = [
+        'input[placeholder*="Mobile"]',
+        'input[placeholder*="mobile"]',
+        'input[placeholder*="Enter Mobile"]',
+        'input[formcontrolname*="mobile"]',
+        'input[formcontrolname*="mobileNo"]',
+        'input[id*="mobile"]',
+        'input[type="tel"]',
+    ];
+    let mobileInput = null;
+    for (let attempt = 0; attempt < 6 && !mobileInput; attempt++) {
+        await umPage.waitForTimeout(3000);
+        for (const sel of mobileSelectors) {
+            const el = umPage.locator(sel).first();
+            const visible = await el.isVisible().catch(() => false);
+            if (visible) { mobileInput = el; console.log(`[UMANG] Mobile input found: ${sel}`); break; }
+        }
+        if (!mobileInput) console.log(`[UMANG] Mobile input not found yet, attempt ${attempt + 1}/6...`);
+    }
+    if (!mobileInput) throw new Error("Mobile input nahi mila. Page load failed.");
+
+    // Ask owner for mobile number (AFTER page is confirmed loaded)
     const mobileRes = await askTelegram(bot, chatId, stateTracker,
         `<blockquote>📱 <b>UMANG Mobile Number Enter Karo</b>\nWoh number jo UMANG account se linked hai:\n<i>(Current: ${UMANG_MOBILE || 'not set'})</i></blockquote>`,
         'text', null, 120000
     );
     const mobileToUse = String(mobileRes.data).trim().replace(/\D/g, '').slice(-10);
     if (mobileToUse.length !== 10) throw new Error("Invalid mobile number — 10 digits chahiye.");
-
-    // STEP 1: Fill mobile number (already visible on page load)
-    const mobileSelectors = [
-        'input[placeholder*="Mobile"]',
-        'input[placeholder*="mobile"]',
-        'input[formcontrolname*="mobile"]',
-        'input[id*="mobile"]',
-        'input[type="tel"]',
-        'input[type="text"]',
-    ];
-    let mobileInput = null;
-    for (const sel of mobileSelectors) {
-        const el = umPage.locator(sel).first();
-        const visible = await el.isVisible().catch(() => false);
-        if (visible) { mobileInput = el; console.log(`[UMANG] Mobile input: ${sel}`); break; }
-    }
-    if (!mobileInput) throw new Error("Mobile input nahi mila.");
     await mobileInput.click({ clickCount: 3 });
     await mobileInput.fill(mobileToUse);
     await umPage.waitForTimeout(500);
