@@ -99,10 +99,11 @@ async function prepareContext() {
         umSession = JSON.parse(fs.readFileSync(umSessionPath, 'utf8'));
     }
 
-    // UMANG: NO proxy — proxy breaks Angular JS bundle loading
+    // Both UMANG and UIDAI need Indian proxy — Railway datacenter IPs are blocked by both
     const baseGeo = { permissions: ['geolocation'], geolocation: { latitude: 28.6139, longitude: 77.2090 } };
     const umOptions = { ...baseGeo };
     if (umSession) umOptions.storageState = umSession;
+    if (PROXY_URL) umOptions.proxy = { server: PROXY_URL };
     const umContext = await globalBrowser.newContext(umOptions);
     const umPage = await umContext.newPage();
 
@@ -442,6 +443,9 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                 try {
                     if (_attempt > 0) {
                         console.warn(`[UMANG] Page reload attempt ${_attempt + 1}...`);
+                        // Try navigating to home first to warm up connection before department URL
+                        await umPage.goto('https://web.umang.gov.in/web_new/home', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+                        await umPage.waitForTimeout(2000);
                         await umPage.goto(umUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
                     } else {
                         await umPage.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
@@ -456,8 +460,9 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
 
                     // CloudFront/CDN block detection
                     if (title.toLowerCase().includes('error') || title.toLowerCase().includes('not be satisfied') || title.toLowerCase().includes('403') || title.toLowerCase().includes('blocked')) {
-                        console.warn(`[UMANG] CloudFront block detected (title: "${title}") — waiting 15s before retry...`);
-                        await umPage.waitForTimeout(15000);
+                        const waitSec = (_attempt + 1) * 20; // 20s, 40s, 60s
+                        console.warn(`[UMANG] CloudFront block detected — waiting ${waitSec}s before retry...`);
+                        await umPage.waitForTimeout(waitSec * 1000);
                         throw new Error(`CDN block: ${title}`);
                     }
 
