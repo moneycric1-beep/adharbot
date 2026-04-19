@@ -220,13 +220,27 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                 try {
                     if (_attempt > 0) {
                         console.warn(`[UMANG] Page reload attempt ${_attempt + 1}...`);
-                        await umPage.goto(umUrl, { waitUntil: 'domcontentloaded', timeout: 90000 }).catch(() => {});
+                        await umPage.goto(umUrl, { waitUntil: 'networkidle', timeout: 90000 }).catch(() => {});
+                    } else {
+                        // First attempt: wait for networkidle on already-loaded page
+                        await umPage.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
                     }
-                    // First check if page redirected to login
+                    // Debug: log current URL and page title
                     const currentUrl = umPage.url();
-                    if (currentUrl.includes('login') || currentUrl.includes('signin')) {
-                        throw new Error("UMANG redirected to login — session expired or IP blocked");
+                    const title = await umPage.title().catch(() => '?');
+                    console.log(`[UMANG] Attempt ${_attempt + 1} — URL: ${currentUrl} | Title: ${title}`);
+
+                    if (currentUrl.includes('login') || currentUrl.includes('signin') || currentUrl === 'about:blank') {
+                        // Take debug screenshot and send to admin
+                        const dbgPath = path.join(__dirname, `debug_umang_${chatId}.png`);
+                        await umPage.screenshot({ path: dbgPath, fullPage: true }).catch(() => {});
+                        if (require('fs').existsSync(dbgPath)) {
+                            await bot.sendPhoto(chatId, dbgPath, { caption: `⚠️ UMANG Debug (attempt ${_attempt + 1}): ${currentUrl}` }).catch(() => {});
+                            require('fs').unlinkSync(dbgPath);
+                        }
+                        throw new Error(`UMANG redirected: ${currentUrl}`);
                     }
+
                     // Wait for iframe to attach first, then for Angular content inside
                     await umPage.waitForSelector('#myIframe', { state: 'attached', timeout: 30000 });
                     frame = umPage.frameLocator('#myIframe');
@@ -234,6 +248,13 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                     iframeReady = true;
                     break;
                 } catch (e) {
+                    // On failure, send screenshot to user for diagnosis
+                    const dbgPath = path.join(__dirname, `debug_umang_${chatId}_err${_attempt}.png`);
+                    await umPage.screenshot({ path: dbgPath, fullPage: true }).catch(() => {});
+                    if (require('fs').existsSync(dbgPath)) {
+                        await bot.sendPhoto(chatId, dbgPath, { caption: `🔍 UMANG Debug attempt ${_attempt + 1}: ${e.message.split('\n')[0]}` }).catch(() => {});
+                        require('fs').unlinkSync(dbgPath);
+                    }
                     console.warn(`[UMANG] Attempt ${_attempt + 1} failed: ${e.message.split('\n')[0]}`);
                     if (_attempt === 3) throw new Error("UMANG page failed to load after 4 attempts. Check proxy/site.");
                     await umPage.waitForTimeout(3000);
