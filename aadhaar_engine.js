@@ -4,30 +4,20 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { Pool } = require('pg');
 
-// ─── LokiProxy Indian Proxy ───────────────────────────────────────────────────
-// Support both full URL (http://user:pass@host:port) and separate env vars
-const PROXY_SERVER   = process.env.PROXY_SERVER   || null;  // e.g. http://global.rp.lokiproxy.com:10000
-const PROXY_USER     = process.env.PROXY_USER     || null;  // e.g. USER773504-zone-custom-region-IN
-const PROXY_PASS     = process.env.PROXY_PASS     || null;  // e.g. Sameer786
-// Legacy single-URL fallback (kept for compatibility)
-const PROXY_URL = process.env.PROXY_URL || null;
+// ─── Oxylabs Indian Datacenter Proxy (rotating ports) ────────────────────────
+const PROXY_USER = process.env.PROXY_USER || null;
+const PROXY_PASS = process.env.PROXY_PASS || null;
+
+// Oxylabs Indian DC ports — rotated randomly per request for IP variety
+const OXYLABS_PORTS = [8001,8002,8003,8004,8005,8006,8007,8008,8009,8010];
 
 function buildProxy() {
-    if (PROXY_SERVER && PROXY_USER && PROXY_PASS) {
-        return { server: PROXY_SERVER, username: PROXY_USER, password: PROXY_PASS };
-    }
-    if (PROXY_URL) {
-        // Try to parse credentials from URL like http://user:pass@host:port
-        try {
-            const u = new URL(PROXY_URL);
-            if (u.username) return { server: `${u.protocol}//${u.host}`, username: decodeURIComponent(u.username), password: decodeURIComponent(u.password) };
-            return { server: PROXY_URL };
-        } catch(_) { return { server: PROXY_URL }; }
-    }
-    return null;
+    if (!PROXY_USER || !PROXY_PASS) return null;
+    const port = OXYLABS_PORTS[Math.floor(Math.random() * OXYLABS_PORTS.length)];
+    return { server: `http://dc.oxylabs.io:${port}`, username: PROXY_USER, password: PROXY_PASS };
 }
 const PROXY_CONFIG = buildProxy();
-if (PROXY_CONFIG) console.log('[PROXY] Using Indian proxy via LokiProxy');
+if (PROXY_CONFIG) console.log(`[PROXY] Using Oxylabs Indian DC proxy`);
 const UMANG_MOBILE = process.env.UMANG_MOBILE || null;
 
 // ─── PostgreSQL for session persistence ──────────────────────────────────────
@@ -755,10 +745,17 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
             } catch (e) {
                 console.warn(`[UIDAI] Page load attempt ${_ui + 1} failed: ${e.message.split('\n')[0]}`);
                 if (_ui >= 4) throw new Error("UIDAI site failed to load after 5 attempts. Check proxy or try later.");
-                // Create a fresh page on retry to avoid stale context
+                // Create a fresh context+page with a new proxy port on retry
                 try {
-                    activeuiPage = await poolEntry.uiContext.newPage();
+                    const freshProxy = buildProxy();
+                    const freshCtx = await globalBrowser.newContext({ 
+                        permissions: ['geolocation'], 
+                        geolocation: { latitude: 28.6139, longitude: 77.2090 },
+                        proxy: freshProxy 
+                    });
+                    activeuiPage = await freshCtx.newPage();
                     await activeuiPage.route('**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf,eot,ico}', r => r.abort()).catch(() => {});
+                    console.log(`[UIDAI] Retry with proxy port: ${freshProxy?.server}`);
                 } catch (ne) { /* use old page */ }
                 await activeuiPage.waitForTimeout(5000);
             }
