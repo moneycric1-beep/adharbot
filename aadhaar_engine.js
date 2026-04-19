@@ -121,12 +121,11 @@ async function prepareContext() {
         umSession = JSON.parse(fs.readFileSync(umSessionPath, 'utf8'));
     }
 
-    // UMANG: needs residential Indian proxy — CloudFront blocks Railway datacenter IPs
-    // Proxy format is now fixed (separate server/username/password) so no more Invalid URL error
     const baseGeo = { permissions: ['geolocation'], geolocation: { latitude: 28.6139, longitude: 77.2090 } };
+
+    // UMANG pool: load WITHOUT proxy (faster warmup). Proxy used as fallback inside executeTask if CloudFront blocks.
     const umOptions = { ...baseGeo };
     if (umSession) umOptions.storageState = umSession;
-    if (PROXY_CONFIG) umOptions.proxy = PROXY_CONFIG;
     const umContext = await globalBrowser.newContext(umOptions);
     const umPage = await umContext.newPage();
 
@@ -445,7 +444,7 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
         userPageRegistry[sId].phase = 1;
         userPageRegistry[sId].sentStickers = []; 
         
-        const umPage = poolEntry.umPage;
+        let umPage = poolEntry.umPage;
         const uiPage = poolEntry.uiPage;
         checkAbort();
 
@@ -461,11 +460,25 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
             let frame;
             let iframeReady = false;
             const umUrl = "https://web.umang.gov.in/web_new/department?url=aadhar_new%2Fservice%2F60007&dept_id=17&dept_name=Retrieve%20EID%2FAadhaar%20Number&fromService=true";
+            let umSession2 = await loadUmangSessionFromDB();
 
             for (let _attempt = 0; _attempt < 4; _attempt++) {
                 try {
                     if (_attempt > 0) {
                         console.warn(`[UMANG] Page reload attempt ${_attempt + 1}...`);
+                        // From attempt 2 onward: recreate context WITH proxy to bypass CloudFront
+                        if (PROXY_CONFIG && _attempt >= 1) {
+                            try { await entry.umContext.close(); } catch(_) {}
+                            const newUmCtx = await globalBrowser.newContext({
+                                permissions: ['geolocation'], geolocation: { latitude: 28.6139, longitude: 77.2090 },
+                                ...(umSession2 ? { storageState: umSession2 } : {}),
+                                proxy: PROXY_CONFIG
+                            });
+                            entry.umContext = newUmCtx;
+                            entry.umPage = await newUmCtx.newPage();
+                            umPage = entry.umPage;
+                            console.log(`[UMANG] Switched to proxy context for attempt ${_attempt + 1}`);
+                        }
                         await umPage.goto(umUrl, { waitUntil: 'domcontentloaded', timeout: 90000 }).catch(() => {});
                         await umPage.waitForTimeout(3000);
                     } else {
@@ -482,9 +495,7 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
 
                     // CloudFront/CDN block detection
                     if (title.toLowerCase().includes('error') || title.toLowerCase().includes('not be satisfied') || title.toLowerCase().includes('403') || title.toLowerCase().includes('blocked')) {
-                        const waitSec = (_attempt + 1) * 20; // 20s, 40s, 60s
-                        console.warn(`[UMANG] CloudFront block detected — waiting ${waitSec}s before retry...`);
-                        await umPage.waitForTimeout(waitSec * 1000);
+                        console.warn(`[UMANG] CloudFront block on attempt ${_attempt + 1} — will retry with proxy`);
                         throw new Error(`CDN block: ${title}`);
                     }
 
@@ -497,7 +508,7 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                 } catch (e) {
                     console.warn(`[UMANG] Attempt ${_attempt + 1} failed: ${e.message.split('\n')[0]}`);
                     if (_attempt === 3) throw new Error("UMANG page failed to load after 4 attempts. Check proxy/site.");
-                    await umPage.waitForTimeout(5000);
+                    await umPage.waitForTimeout(3000);
                 }
             }
 
