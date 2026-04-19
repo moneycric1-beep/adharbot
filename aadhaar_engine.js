@@ -222,25 +222,6 @@ async function doUmangLogin(umPage, bot, chatId, stateTracker) {
     const loginUrl = 'https://web.umang.gov.in/web_new/login';
     await umPage.goto(loginUrl, { waitUntil: 'networkidle', timeout: 60000 });
 
-    // STEP 1: Click "Login with OTP" tab FIRST to switch login mode
-    const otpTabSelectors = [
-        'a:has-text("Login with OTP")',
-        'span:has-text("Login with OTP")',
-        'li:has-text("Login with OTP")',
-        'div:has-text("Login with OTP")',
-        'button:has-text("Login with OTP")',
-    ];
-    for (const sel of otpTabSelectors) {
-        const el = umPage.locator(sel).first();
-        const visible = await el.isVisible().catch(() => false);
-        if (visible) {
-            await el.click();
-            console.log(`[UMANG] OTP tab clicked: ${sel}`);
-            await umPage.waitForTimeout(1000);
-            break;
-        }
-    }
-
     // Ask owner for mobile number
     const mobileRes = await askTelegram(bot, chatId, stateTracker,
         `<blockquote>📱 <b>UMANG Mobile Number Enter Karo</b>\nWoh number jo UMANG account se linked hai:\n<i>(Current: ${UMANG_MOBILE || 'not set'})</i></blockquote>`,
@@ -249,17 +230,14 @@ async function doUmangLogin(umPage, bot, chatId, stateTracker) {
     const mobileToUse = String(mobileRes.data).trim().replace(/\D/g, '').slice(-10);
     if (mobileToUse.length !== 10) throw new Error("Invalid mobile number — 10 digits chahiye.");
 
-    // STEP 2: Fill mobile number
+    // STEP 1: Fill mobile number (already visible on page load)
     const mobileSelectors = [
         'input[placeholder*="Mobile"]',
         'input[placeholder*="mobile"]',
         'input[formcontrolname*="mobile"]',
-        'input[formcontrolname*="Mobile"]',
         'input[id*="mobile"]',
-        'input[name*="mobile"]',
         'input[type="tel"]',
         'input[type="text"]',
-        'input'
     ];
     let mobileInput = null;
     for (const sel of mobileSelectors) {
@@ -268,29 +246,33 @@ async function doUmangLogin(umPage, bot, chatId, stateTracker) {
         if (visible) { mobileInput = el; console.log(`[UMANG] Mobile input: ${sel}`); break; }
     }
     if (!mobileInput) throw new Error("Mobile input nahi mila.");
-    await mobileInput.click();
+    await mobileInput.click({ clickCount: 3 });
     await mobileInput.fill(mobileToUse);
-    await umPage.waitForTimeout(800);
+    await umPage.waitForTimeout(500);
 
-    // Screenshot BEFORE clicking Get OTP — dekho kya button hai
-    const dbgBefore = path.join(__dirname, `umang_before_getotp.png`);
-    await umPage.screenshot({ path: dbgBefore, fullPage: true }).catch(() => {});
-    if (fs.existsSync(dbgBefore)) {
-        await bot.sendPhoto(chatId, dbgBefore, { caption: '📸 Mobile fill ke baad — Get OTP button dhundh raha hu' }).catch(() => {});
-        fs.unlinkSync(dbgBefore);
+    // STEP 2: Click "Login with OTP" button specifically (NOT the "Login"/MPIN button)
+    // Use exact text match to avoid clicking wrong button
+    let loginWithOtpClicked = false;
+    const loginOtpSelectors = [
+        'button:text-is("Login with OTP")',
+        'button:has-text("Login with OTP")',
+        'a:has-text("Login with OTP")',
+        'span:has-text("Login with OTP")',
+    ];
+    for (const sel of loginOtpSelectors) {
+        const el = umPage.locator(sel).last(); // use .last() — "Login with OTP" is below "Login"
+        const visible = await el.isVisible().catch(() => false);
+        if (visible) { await el.click(); loginWithOtpClicked = true; console.log(`[UMANG] Login with OTP clicked: ${sel}`); break; }
     }
+    if (!loginWithOtpClicked) throw new Error("'Login with OTP' button nahi mila.");
+    await umPage.waitForTimeout(1500);
 
-    // STEP 3: Click "Get OTP" submit button — try all variations
+    // STEP 3: Click "Get OTP" on the next screen
     const getOtpSelectors = [
         'button:has-text("Get OTP")',
         'button:has-text("Send OTP")',
         'button:has-text("Request OTP")',
-        'button:has-text("Login")',
-        'button:has-text("Continue")',
-        'button:has-text("Submit")',
-        'button:has-text("Proceed")',
-        'input[value*="OTP"]',
-        'input[type="submit"]',
+        'button:has-text("Generate OTP")',
         'button[type="submit"]',
     ];
     let otpBtnClicked = false;
@@ -300,16 +282,14 @@ async function doUmangLogin(umPage, bot, chatId, stateTracker) {
         if (visible) { await el.click(); otpBtnClicked = true; console.log(`[UMANG] Get OTP btn: ${sel}`); break; }
     }
     if (!otpBtnClicked) {
-        // Last resort: log all visible buttons text
         const allBtns = await umPage.locator('button').all();
         const btnTexts = [];
         for (const b of allBtns) {
             const t = await b.innerText().catch(() => '');
             const v = await b.isVisible().catch(() => false);
-            if (v) btnTexts.push(t.trim());
+            if (v && t.trim()) btnTexts.push(t.trim());
         }
-        console.warn(`[UMANG] Visible buttons: ${btnTexts.join(' | ')}`);
-        throw new Error(`Get OTP button nahi mila. Visible buttons: ${btnTexts.join(', ')}`);
+        throw new Error(`Get OTP button nahi mila. Visible: ${btnTexts.join(' | ')}`);
     }
 
     // Screenshot after clicking — confirm OTP sent
