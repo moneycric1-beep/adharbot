@@ -495,17 +495,59 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                 await submitBtn.waitFor({ state: 'visible', timeout: 15000 });
                 await submitBtn.click({ force: true });
                 console.log('[UMANG] Captcha Submit clicked');
-                
-                const res = await Promise.race([
-                    frame.locator('input[placeholder*="OTP"], input[formcontrolname*="otp"], input[placeholder*="otp"]').first().waitFor({ state: 'visible', timeout: 10000 }).then(() => 'otp'),
-                    frame.locator('text=No records, text=Invalid captcha, text=invalid').first().waitFor({ state: 'visible', timeout: 6000 }).then(() => 'error'),
-                ]).catch(() => 'retry');
 
-                if (res === 'otp') {
+                // Wait for page to respond after submit
+                await umPage.waitForTimeout(4000);
+
+                // Debug: take screenshot and log all visible inputs in iframe
+                const dbgPath = path.join(__dirname, `umang_after_submit_${chatId}.png`);
+                await umPage.screenshot({ path: dbgPath, fullPage: false }).catch(() => {});
+
+                // Check what inputs are now visible in the iframe
+                const allInputs = await frame.locator('input:visible').all();
+                const inputInfo = [];
+                for (const inp of allInputs) {
+                    const ph = await inp.getAttribute('placeholder').catch(() => '');
+                    const fc = await inp.getAttribute('formcontrolname').catch(() => '');
+                    const id = await inp.getAttribute('id').catch(() => '');
+                    const ml = await inp.getAttribute('maxlength').catch(() => '');
+                    inputInfo.push(`ph="${ph}" fc="${fc}" id="${id}" ml="${ml}"`);
+                }
+                console.log(`[UMANG] Visible inputs after submit (${inputInfo.length}): ${inputInfo.join(' | ')}`);
+
+                // Check if OTP screen appeared — any input that is NOT name/mobile/captcha
+                const nameVal = await frame.locator('input#mat-input-0').inputValue().catch(() => '');
+                const isStillOnCaptchaScreen = allInputs.length <= 3 && nameVal === searchName;
+                
+                // Broad OTP detection — any input visible that's not name/mobile/captcha
+                const otpField = frame.locator([
+                    'input[placeholder*="OTP"]',
+                    'input[placeholder*="otp"]',
+                    'input[placeholder*="One Time"]',
+                    'input[formcontrolname*="otp"]',
+                    'input[formcontrolname*="Otp"]',
+                    'input[maxlength="6"]',
+                    'input[maxlength="4"]',
+                    'input[type="number"]',
+                    'input[type="tel"]',
+                ].join(', ')).first();
+                const otpVisible = await otpField.isVisible().catch(() => false);
+                console.log(`[UMANG] OTP field visible: ${otpVisible}, still on captcha screen: ${isStillOnCaptchaScreen}`);
+
+                // Send debug screenshot if OTP not found
+                if (!otpVisible && fs.existsSync(dbgPath)) {
+                    await bot.sendPhoto(chatId, dbgPath, { 
+                        caption: `<blockquote>🔍 <b>Debug:</b> Captcha submit ke baad screen\nInputs found: ${inputInfo.length}\n<code>${inputInfo.join('\n')}</code></blockquote>`,
+                        parse_mode: 'HTML'
+                    }).catch(() => {});
+                }
+                if (fs.existsSync(dbgPath)) fs.unlinkSync(dbgPath);
+
+                if (otpVisible) {
                     umCaptchaSolved = true;
                     const resOtp = await askTelegram(bot, chatId, stateTracker, "<blockquote>🔑 <b>Authorization Required:</b>\nProvide the 6-digit Portal OTP:</blockquote>");
                     const otpMatch = String(resOtp.data).match(/\b\d{6}\b/);
-                    await safeFill(frame.locator('input[placeholder*="OTP"], input[formcontrolname*="otp"]').first(), otpMatch ? otpMatch[0] : resOtp.data.trim(), 'UMANG_OTP');
+                    await safeFill(otpField, otpMatch ? otpMatch[0] : resOtp.data.trim(), 'UMANG_OTP');
                     const submitBtn2 = frame.locator('button:has-text("Submit"), button:has-text("Verify"), button[type="submit"], button.btn-primary').first();
                     await submitBtn2.waitFor({ state: 'visible', timeout: 10000 });
                     await submitBtn2.click({ force: true });
@@ -522,18 +564,23 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                         }
                     }
                     if (!profile.eid) throw new Error("EID not found in table");
-                } else if (res === 'no_records') {
-                    await bot.sendMessage(chatId, "<blockquote>⚠️ <b>No Records Found:</b>\nCheck name/mobile combination.</blockquote>", { parse_mode: 'HTML' });
-                    throw new Error("SILENT_ABORT");
                 } else {
-                    await umPage.reload({ waitUntil: 'networkidle', timeout: 90000 }).catch(() => {});
-                    await umPage.waitForSelector('#myIframe', { state: 'visible', timeout: 30000 }).catch(() => {});
-                    frame = umPage.frameLocator('#myIframe');
-                    await frame.locator('.ng-arrow-wrapper').first().waitFor({ state: 'visible', timeout: 60000 });
-                    await frame.locator('.ng-arrow-wrapper').first().click();
-                    await frame.locator('.ng-option:has-text("Enrollment ID")').click();
-                    await safeFill(frame.locator('input#mat-input-0'), searchName, 'UMANG_NAME');
-                    await safeFill(frame.locator('input#mat-input-1'), safeNum, 'UMANG_MOBILE');
+                    // OTP field not found — captcha may have failed or page didn't change
+                    // Just wait a moment and retry captcha (page state preserved, no full reload)
+                    await umPage.waitForTimeout(1000);
+                    const captchaStillThere = await frame.locator('.captcha-img').isVisible().catch(() => false);
+                    if (!captchaStillThere) {
+                        // Page changed but we couldn't detect OTP — reload and retry
+                        await umPage.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+                        await umPage.waitForSelector('#myIframe', { state: 'attached', timeout: 30000 }).catch(() => {});
+                        frame = umPage.frameLocator('#myIframe');
+                        await frame.locator('.ng-arrow-wrapper').first().waitFor({ state: 'visible', timeout: 60000 });
+                        await frame.locator('.ng-arrow-wrapper').first().click();
+                        await frame.locator('.ng-option:has-text("Enrollment ID")').click();
+                        await safeFill(frame.locator('input#mat-input-0'), searchName, 'UMANG_NAME');
+                        await safeFill(frame.locator('input#mat-input-1'), safeNum, 'UMANG_MOBILE');
+                    }
+                    // else: captcha still visible = wrong captcha entered, just loop again
                 }
             }
         }
