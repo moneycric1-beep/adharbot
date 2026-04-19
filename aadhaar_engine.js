@@ -63,23 +63,23 @@ async function initPool() {
 async function prepareContext() {
     const umSessionPath = path.join(__dirname, 'umang_session.json');
 
-    // UMANG context — NO proxy (UMANG blocks datacenter proxies)
-    const umOptions = fs.existsSync(umSessionPath) ? { storageState: umSessionPath } : {};
-    umOptions.permissions = ['geolocation'];
-    umOptions.geolocation = { latitude: 28.6139, longitude: 77.2090 };
+    // Both UMANG and UIDAI need Indian proxy — Railway datacenter IPs are blocked by both
+    const baseOptions = { permissions: ['geolocation'], geolocation: { latitude: 28.6139, longitude: 77.2090 } };
+    if (PROXY_URL) {
+        baseOptions.proxy = { server: PROXY_URL };
+        console.log('[CONTEXT] Proxy enabled for both UMANG and UIDAI');
+    } else {
+        console.warn('[CONTEXT] No proxy set — Railway IPs may be blocked');
+    }
+
+    // UMANG context (with session if available)
+    const umOptions = { ...baseOptions };
+    if (fs.existsSync(umSessionPath)) umOptions.storageState = umSessionPath;
     const umContext = await globalBrowser.newContext(umOptions);
     const umPage = await umContext.newPage();
-    console.log('[CONTEXT] UMANG context: direct (no proxy)');
 
-    // UIDAI context — Indian proxy required
-    const uiOptions = { permissions: ['geolocation'], geolocation: { latitude: 28.6139, longitude: 77.2090 } };
-    if (PROXY_URL) {
-        uiOptions.proxy = { server: PROXY_URL };
-        console.log('[CONTEXT] UIDAI context: proxy enabled');
-    } else {
-        console.warn('[CONTEXT] UIDAI context: no proxy set');
-    }
-    const uiContext = await globalBrowser.newContext(uiOptions);
+    // UIDAI context
+    const uiContext = await globalBrowser.newContext(baseOptions);
     const uiPage = await uiContext.newPage();
 
     const umUrl = "https://web.umang.gov.in/web_new/department?url=aadhar_new%2Fservice%2F60007&dept_id=17&dept_name=Retrieve%20EID%2FAadhaar%20Number&fromService=true";
@@ -222,15 +222,21 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                         console.warn(`[UMANG] Page reload attempt ${_attempt + 1}...`);
                         await umPage.goto(umUrl, { waitUntil: 'domcontentloaded', timeout: 90000 }).catch(() => {});
                     }
-                    await umPage.waitForSelector('#myIframe', { state: 'visible', timeout: 45000 });
+                    // First check if page redirected to login
+                    const currentUrl = umPage.url();
+                    if (currentUrl.includes('login') || currentUrl.includes('signin')) {
+                        throw new Error("UMANG redirected to login — session expired or IP blocked");
+                    }
+                    // Wait for iframe to attach first, then for Angular content inside
+                    await umPage.waitForSelector('#myIframe', { state: 'attached', timeout: 30000 });
                     frame = umPage.frameLocator('#myIframe');
-                    await frame.locator('.ng-arrow-wrapper').first().waitFor({ state: 'visible', timeout: 40000 });
+                    await frame.locator('.ng-arrow-wrapper').first().waitFor({ state: 'visible', timeout: 60000 });
                     iframeReady = true;
                     break;
                 } catch (e) {
                     console.warn(`[UMANG] Attempt ${_attempt + 1} failed: ${e.message.split('\n')[0]}`);
                     if (_attempt === 3) throw new Error("UMANG page failed to load after 4 attempts. Check proxy/site.");
-                    await umPage.waitForTimeout(2000);
+                    await umPage.waitForTimeout(3000);
                 }
             }
 
