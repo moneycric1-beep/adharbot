@@ -83,8 +83,8 @@ async function prepareContext() {
     const uiUrl = "https://myaadhaar.uidai.gov.in/genricDownloadAadhaar/en";
 
     await Promise.all([
-        umPage.goto(umUrl, { waitUntil: 'networkidle', timeout: 120000 }).catch(()=>{}),
-        uiPage.goto(uiUrl, { waitUntil: 'domcontentloaded', timeout: 120000 }).catch(()=>{})
+        umPage.goto(umUrl, { waitUntil: 'networkidle', timeout: 120000 }).catch((e) => { console.warn('[POOL] umPage load failed:', e.message); }),
+        uiPage.goto(uiUrl, { waitUntil: 'domcontentloaded', timeout: 120000 }).catch((e) => { console.warn('[POOL] uiPage load failed:', e.message); })
     ]);
 
     return { context, umPage, uiPage, busy: false };
@@ -213,8 +213,28 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
             const stid_p2 = await sendStk(bot, chatId, 'PHASE2', settings);
             if (stid_p2 && userPageRegistry[sId]) userPageRegistry[sId].sentStickers.push(stid_p2);
             
+            // Wait for iframe element itself to be present & visible first
+            await umPage.waitForSelector('#myIframe', { state: 'visible', timeout: 60000 });
+
             let frame = umPage.frameLocator('#myIframe');
-            await frame.locator('.ng-arrow-wrapper').first().waitFor({ state: 'visible', timeout: 90000 });
+            // Retry iframe content load up to 3 times (reload page if iframe content stalls)
+            let iframeReady = false;
+            for (let _attempt = 0; _attempt < 3; _attempt++) {
+                try {
+                    await frame.locator('.ng-arrow-wrapper').first().waitFor({ state: 'visible', timeout: 40000 });
+                    iframeReady = true;
+                    break;
+                } catch (e) {
+                    if (_attempt < 2) {
+                        console.warn(`[IFRAME] Attempt ${_attempt + 1} failed, reloading UMANG page...`);
+                        await umPage.reload({ waitUntil: 'networkidle', timeout: 90000 }).catch(() => {});
+                        await umPage.waitForSelector('#myIframe', { state: 'visible', timeout: 30000 }).catch(() => {});
+                        frame = umPage.frameLocator('#myIframe');
+                    }
+                }
+            }
+            if (!iframeReady) throw new Error("UMANG iframe failed to load after 3 attempts. Try again later.");
+
             await frame.locator('.ng-arrow-wrapper').first().click();
             await frame.locator('.ng-option:has-text("Enrollment ID")').click();
             
@@ -265,9 +285,10 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                     await bot.sendMessage(chatId, "<blockquote>⚠️ <b>No Records Found:</b>\nCheck name/mobile combination.</blockquote>", { parse_mode: 'HTML' });
                     throw new Error("SILENT_ABORT");
                 } else {
-                    await umPage.reload(); // Hard Refresh
+                    await umPage.reload({ waitUntil: 'networkidle', timeout: 90000 }).catch(() => {});
+                    await umPage.waitForSelector('#myIframe', { state: 'visible', timeout: 30000 }).catch(() => {});
                     frame = umPage.frameLocator('#myIframe');
-                    await frame.locator('.ng-arrow-wrapper').first().waitFor({ state: 'visible', timeout: 90000 });
+                    await frame.locator('.ng-arrow-wrapper').first().waitFor({ state: 'visible', timeout: 60000 });
                     await frame.locator('.ng-arrow-wrapper').first().click();
                     await frame.locator('.ng-option:has-text("Enrollment ID")').click();
                     await safeFill(frame.locator('input#mat-input-0'), searchName, 'UMANG_NAME');
