@@ -346,25 +346,39 @@ async function doUmangLogin(umPage, bot, chatId, stateTracker) {
     const otpDigits = (otpVal ? otpVal[0] : resOtp.data.trim()).replace(/\D/g, '');
 
     if (otpIsBoxes) {
-        const boxes = await umPage.locator(otpLocator).all();
-        for (let i = 0; i < otpDigits.length && i < boxes.length; i++) {
-            await boxes[i].click();
-            await boxes[i].fill(otpDigits[i]);
-            await umPage.waitForTimeout(80);
-        }
-        console.log('[UMANG] OTP filled in individual boxes');
+        // ng-otp-input: click first box, then type all digits — component auto-moves focus
+        const firstBox = umPage.locator(otpLocator).first();
+        await firstBox.click();
+        await umPage.keyboard.type(otpDigits, { delay: 100 });
+        console.log('[UMANG] OTP typed into boxes via keyboard.type()');
     } else {
-        await umPage.locator(otpLocator).first().fill(otpDigits);
-        console.log('[UMANG] OTP filled in single input');
+        const singleEl = umPage.locator(otpLocator).first();
+        await singleEl.click({ clickCount: 3 });
+        await umPage.keyboard.type(otpDigits, { delay: 100 });
+        console.log('[UMANG] OTP typed into single input via keyboard.type()');
     }
 
+    // Wait for Verify OTP button to become enabled
+    await umPage.waitForFunction(() => {
+        const btn = Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim().includes('Verify OTP'));
+        return btn && !btn.disabled;
+    }, { timeout: 15000 }).catch(() => console.log('[UMANG] Verify OTP btn still disabled — proceeding anyway'));
+
     // STEP 5: Submit — "Verify OTP" button
-    const submitSelectors = ['button:has-text("Verify OTP")', 'button:has-text("Verify")', 'button:has-text("Login")', 'button:has-text("Submit")', 'button[type="submit"]'];
+    const submitSelectors = ['button:has-text("Verify OTP")', 'button:has-text("Verify")', 'button:has-text("Submit")', 'button[type="submit"]'];
+    let submitClicked = false;
     for (const sel of submitSelectors) {
         const el = umPage.locator(sel).first();
         const visible = await el.isVisible().catch(() => false);
-        if (visible) { await el.click(); break; }
+        if (visible) {
+            // force:true bypasses disabled check — Angular may still accept the click
+            await el.click({ force: true });
+            submitClicked = true;
+            console.log(`[UMANG] Submit clicked: ${sel}`);
+            break;
+        }
     }
+    if (!submitClicked) throw new Error("Verify OTP button nahi mila.");
 
     await umPage.waitForURL(url => !url.toString().includes('/login'), { timeout: 30000 });
 
