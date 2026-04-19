@@ -307,50 +307,56 @@ async function doUmangLogin(umPage, bot, chatId, stateTracker) {
         await umPage.waitForTimeout(500);
     }
 
-    const resOtp = await askTelegram(bot, chatId, stateTracker,
-        "<blockquote>📲 <b>UMANG OTP Enter Karo</b>\n(Operator ke mobile pe aaya hoga):</blockquote>",
-        'text', null, 180000
-    );
-    const otpVal = String(resOtp.data).match(/\b\d{4,6}\b/);
-    const otpDigits = (otpVal ? otpVal[0] : resOtp.data.trim()).replace(/\D/g, '');
-
-    await umPage.waitForTimeout(500);
-
-    // OTP can be 6 individual boxes OR a single input
-    // Try single input first
-    const singleOtpSelectors = [
+    // Wait for OTP input to appear (up to 20s) BEFORE asking user
+    const otpInputSelectors = [
+        'input[maxlength="1"]',
         'input[placeholder*="OTP"]',
         'input[placeholder*="otp"]',
         'input[formcontrolname*="otp"]',
         'input[maxlength="6"]',
+        'input[maxlength="4"]',
+        'ng-otp-input input',
     ];
-    let otpFilled = false;
-    for (const sel of singleOtpSelectors) {
-        const el = umPage.locator(sel).first();
-        const visible = await el.isVisible().catch(() => false);
-        if (visible) {
-            await el.fill(otpDigits);
-            otpFilled = true;
-            console.log(`[UMANG] OTP filled in single input: ${sel}`);
-            break;
-        }
-    }
-
-    // If not single input, try 6 individual boxes
-    if (!otpFilled) {
-        const boxes = await umPage.locator('input[maxlength="1"], input[type="tel"][maxlength="1"], input[type="number"][maxlength="1"]').all();
-        if (boxes.length >= otpDigits.length) {
-            for (let i = 0; i < otpDigits.length && i < boxes.length; i++) {
-                await boxes[i].click();
-                await boxes[i].fill(otpDigits[i]);
-                await umPage.waitForTimeout(100);
+    let otpLocator = null;
+    let otpIsBoxes = false;
+    for (let w = 0; w < 7 && !otpLocator; w++) {
+        await umPage.waitForTimeout(2000);
+        for (const sel of otpInputSelectors) {
+            const els = await umPage.locator(sel).all();
+            if (els.length > 0) {
+                const vis = await els[0].isVisible().catch(() => false);
+                if (vis) {
+                    otpLocator = sel;
+                    otpIsBoxes = (sel === 'input[maxlength="1"]' || sel === 'ng-otp-input input') && els.length >= 4;
+                    console.log(`[UMANG] OTP input found: ${sel} (count=${els.length}, boxes=${otpIsBoxes})`);
+                    break;
+                }
             }
-            otpFilled = true;
-            console.log('[UMANG] OTP filled in individual boxes');
         }
+        if (!otpLocator) console.log(`[UMANG] OTP input wait ${w + 1}/7...`);
     }
+    if (!otpLocator) throw new Error("OTP input field nahi mila. UMANG page did not render OTP screen.");
 
-    if (!otpFilled) throw new Error("OTP input field nahi mila.");
+    // NOW ask user for OTP (page is confirmed ready)
+    const resOtp = await askTelegram(bot, chatId, stateTracker,
+        "<blockquote>📲 <b>UMANG OTP Enter Karo</b>\n(Abhi UMANG ka naya OTP aaya hoga mobile pe):</blockquote>",
+        'text', null, 180000
+    );
+    const otpVal = String(resOtp.data).match(/\d{4,6}/);
+    const otpDigits = (otpVal ? otpVal[0] : resOtp.data.trim()).replace(/\D/g, '');
+
+    if (otpIsBoxes) {
+        const boxes = await umPage.locator(otpLocator).all();
+        for (let i = 0; i < otpDigits.length && i < boxes.length; i++) {
+            await boxes[i].click();
+            await boxes[i].fill(otpDigits[i]);
+            await umPage.waitForTimeout(80);
+        }
+        console.log('[UMANG] OTP filled in individual boxes');
+    } else {
+        await umPage.locator(otpLocator).first().fill(otpDigits);
+        console.log('[UMANG] OTP filled in single input');
+    }
 
     // STEP 5: Submit — "Verify OTP" button
     const submitSelectors = ['button:has-text("Verify OTP")', 'button:has-text("Verify")', 'button:has-text("Login")', 'button:has-text("Submit")', 'button[type="submit"]'];
