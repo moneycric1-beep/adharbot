@@ -230,6 +230,14 @@ async function doUmangLogin(umPage, bot, chatId, stateTracker) {
         fs.unlinkSync(dbgPath);
     }
 
+    // Ask owner to enter mobile number manually (don't rely on env var alone)
+    const mobileRes = await askTelegram(bot, chatId, stateTracker,
+        `<blockquote>📱 <b>UMANG Mobile Number Enter Karo</b>\nWoh number jo UMANG account se linked hai:\n<i>(Current: ${UMANG_MOBILE || 'not set'})</i></blockquote>`,
+        'text', null, 120000
+    );
+    const mobileToUse = String(mobileRes.data).trim().replace(/\D/g, '').slice(-10);
+    if (mobileToUse.length !== 10) throw new Error("Invalid mobile number — 10 digits chahiye.");
+
     // Try all possible mobile input selectors
     const mobileSelectors = [
         'input[formcontrolname*="mobile"]',
@@ -258,7 +266,7 @@ async function doUmangLogin(umPage, bot, chatId, stateTracker) {
     if (!mobileInput) throw new Error("Mobile input field nahi mila. Screenshot dekho upar.");
 
     await mobileInput.click();
-    await mobileInput.fill(UMANG_MOBILE || '');
+    await mobileInput.fill(mobileToUse);
     await umPage.waitForTimeout(500);
 
     // Click OTP button
