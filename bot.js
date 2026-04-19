@@ -41,7 +41,7 @@ const DEFAULT_DB = {
         channel_id: null,
         always_mr: false,
         paid_only_mode: true,
-        plan_message: "<blockquote>💎 <b>EXCLUSIVE PREMIUM OFFER!</b> (Limited Slots)\n\nFor the first 10 users only, get <b>15 Days of Unlimited Premium</b> for just <b>$30</b>! \n<i>(Hurry, only 6 slots remain!)</i>\n\n<b>Standard Plans (After Offer Ends):</b>\n• 1 Week Premium - <b>$25</b>\n• 1 Month Premium - <b>$50</b>\n\n<i>Note: Premium unlocks limitless searches, zero delays, and /crack tool access.</i>\n\n⭐ Check our trusted feedbacks here: <b>@astikdukan</b>\n\n👉 <b>Buy Now:</b> Contact Support or the Owner directly!</blockquote>",
+        plan_message: "<blockquote>💎 <b>EXCLUSIVE PREMIUM OFFER!</b> (Limited Slots)\n\nFor the first 10 users only, get <b>15 Days of Unlimited Premium</b> for just <b>$30</b>! \n<i>(Hurry, only 6 slots remain!)</i>\n\n<b>Standard Plans (After Offer Ends):</b>\n• 1 Week Premium - <b>$25</b>\n• 1 Month Premium - <b>$50</b>\n\n<i>Note: Premium unlocks limitless searches, zero delays, and /crack tool access.</i>\n\n⭐ Check our trusted feedbacks here: <b>@moneyfuckingsocietyy</b>\n\n👉 <b>Buy Now:</b> Contact Support or the Owner directly!</blockquote>",
         start_sticker: "CAACAgIAAxkBAAEL6VdmAe6pXqL3P2wZ6Z_0p6Q2Y_S7XgACRAADr8ZRGm9-vWj498_rNAQ"
     },
     sessions: {}
@@ -207,7 +207,7 @@ async function executeTask(task) {
         const hasCredits = u && u.credits > 0;
         if (!isPr && !hasCredits && task.chatId !== OWNER_ID) {
             if (wasPremium) {
-                bot.sendMessage(task.chatId, '<blockquote>🥀 <b>Premium Expired!</b>\nYour access has officially expired.\n\n└ Contact @AstikHoon to renew.</blockquote>', { parse_mode: 'HTML' }).catch(()=>{});
+                bot.sendMessage(task.chatId, '<blockquote>🥀 <b>Premium Expired!</b>\nYour access has officially expired.\n\n└ Contact @moneyfuckingsocietyy to renew.</blockquote>', { parse_mode: 'HTML' }).catch(()=>{});
             } else {
                 bot.sendMessage(task.chatId, '<blockquote>❌ <b>No Access:</b>\nYou need <b>credits</b> or a <b>Premium</b> plan to continue.</blockquote>', { parse_mode: 'HTML' }).catch(()=>{});
             }
@@ -419,7 +419,7 @@ bot.on('message', async (msg) => {
         }
         if (text === '📞 Set Support ID') {
             userStates[chatId] = { step: 'AWAITING_SUPPORT_ID' };
-            return bot.sendMessage(chatId, '<blockquote>📞 <b>Set Support ID:</b>\nEnter the Telegram username for the support contact (e.g. <code>@AstikHoon</code> or <code>@MySupportBot</code>).\n<i>(Type /cancel to abort)</i></blockquote>', { parse_mode: 'HTML' });
+            return bot.sendMessage(chatId, '<blockquote>📞 <b>Set Support ID:</b>\nEnter the Telegram username for the support contact (e.g. <code>@moneyfuckingsocietyy</code> or <code>@MySupportBot</code>).\n<i>(Type /cancel to abort)</i></blockquote>', { parse_mode: 'HTML' });
         }
     }
 
@@ -1236,7 +1236,7 @@ async function sendWelcome(chatId, user) {
         welcome += `<blockquote>👤 <b>User Identity:</b> <code>${chatId}</code>\n\n├ 💳 Credits: <code>${user.credits}</code>\n└ 👑 Rank: <b>Standard</b></blockquote>\n`;
     }
 
-    const supportUser = (db.settings.support_id || "@AstikHoon").replace('@', '');
+    const supportUser = (db.settings.support_id || "@moneyfuckingsocietyy").replace('@', '');
     if (!isPr) {
         welcome += `\n<blockquote>💎 <b>Upgrade to Premium:</b>\nGet unlimited searches and unlock /crack utility.\n👉 <a href="https://t.me/${supportUser}">Contact Support</a></blockquote>\n`;
     } else {
