@@ -7,6 +7,7 @@ const { spawn } = require('child_process');
 // Set PROXY_URL in Railway env as: http://USER:PASS@host:port
 // e.g. http://USER773504-zone-custom-region-IN:PASSWORD@global.rp.lokiproxy.com:10000
 const PROXY_URL = process.env.PROXY_URL || null;
+const UMANG_MOBILE = process.env.UMANG_MOBILE || null; // Operator's UMANG registered mobile
 
 const STICKERS_DEFAULT = {
     BOOTING: "CAACAgIAAxkBAAEL6VdmAe6pXqL3P2wZ6Z_0p6Q2Y_S7XgACRAADr8ZRGm9-vWj498_rNAQ",
@@ -183,6 +184,41 @@ function getPoolStats() {
     };
 }
 
+// Handles UMANG login when session expired/missing
+async function doUmangLogin(umPage, bot, chatId, stateTracker) {
+    if (!UMANG_MOBILE) throw new Error("UMANG session expired. Set UMANG_MOBILE in Railway env and re-run.");
+
+    console.log('[UMANG] Session expired — attempting auto-login with UMANG_MOBILE');
+    await bot.sendMessage(chatId, "<blockquote>🔄 <b>UMANG Session Expired</b>\nAuto re-login ho raha hai...</blockquote>", { parse_mode: 'HTML' }).catch(() => {});
+
+    // Fill mobile number
+    await umPage.waitForSelector('input[placeholder*="Mobile"], input[name*="mobile"], input[type="tel"]', { timeout: 15000 });
+    const mobileInput = umPage.locator('input[placeholder*="Mobile"], input[name*="mobile"], input[type="tel"]').first();
+    await mobileInput.fill(UMANG_MOBILE);
+
+    // Click Get OTP / Login button
+    const otpBtn = umPage.locator('button:has-text("Get OTP"), button:has-text("Login with OTP"), button:has-text("Send OTP")').first();
+    await otpBtn.click();
+
+    // Ask user/admin for the OTP
+    const resOtp = await askTelegram(bot, chatId, stateTracker,
+        "<blockquote>🔑 <b>UMANG Login OTP</b>\nOperator ke mobile pe OTP aaya hai, enter karo:</blockquote>",
+        'text', null, 180000
+    );
+    const otpVal = String(resOtp.data).match(/\b\d{6}\b/);
+    const otpInput = umPage.locator('input[placeholder*="OTP"], input[name*="otp"]').first();
+    await otpInput.fill(otpVal ? otpVal[0] : resOtp.data.trim());
+    await umPage.locator('button:has-text("Login"), button:has-text("Verify"), button:has-text("Submit")').first().click();
+
+    // Wait for redirect away from login page
+    await umPage.waitForURL(url => !url.includes('/login'), { timeout: 30000 });
+
+    // Save session for future use
+    const umSessionPath = path.join(__dirname, 'umang_session.json');
+    await umPage.context().storageState({ path: umSessionPath });
+    console.log('[UMANG] Session saved to umang_session.json');
+}
+
 async function executeTask(bot, chatId, crackName, mobileNumber, searchName, stateTracker, updateProg, settings) {
     let poolEntry = null;
     let pId = null;
@@ -232,14 +268,11 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                     console.log(`[UMANG] Attempt ${_attempt + 1} — URL: ${currentUrl} | Title: ${title}`);
 
                     if (currentUrl.includes('login') || currentUrl.includes('signin') || currentUrl === 'about:blank') {
-                        // Take debug screenshot and send to admin
-                        const dbgPath = path.join(__dirname, `debug_umang_${chatId}.png`);
-                        await umPage.screenshot({ path: dbgPath, fullPage: true }).catch(() => {});
-                        if (require('fs').existsSync(dbgPath)) {
-                            await bot.sendPhoto(chatId, dbgPath, { caption: `⚠️ UMANG Debug (attempt ${_attempt + 1}): ${currentUrl}` }).catch(() => {});
-                            require('fs').unlinkSync(dbgPath);
-                        }
-                        throw new Error(`UMANG redirected: ${currentUrl}`);
+                        // Session expired — try to login
+                        await doUmangLogin(umPage, bot, chatId, stateTracker);
+                        // After login, go back to the service URL
+                        await umPage.goto(umUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+                        throw new Error(`Re-login done, retrying...`);
                     }
 
                     // Wait for iframe to attach (may not be 'visible' — Angular renders it hidden first)
@@ -249,13 +282,6 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                     iframeReady = true;
                     break;
                 } catch (e) {
-                    // On failure, send screenshot to user for diagnosis
-                    const dbgPath = path.join(__dirname, `debug_umang_${chatId}_err${_attempt}.png`);
-                    await umPage.screenshot({ path: dbgPath, fullPage: true }).catch(() => {});
-                    if (require('fs').existsSync(dbgPath)) {
-                        await bot.sendPhoto(chatId, dbgPath, { caption: `🔍 UMANG Debug attempt ${_attempt + 1}: ${e.message.split('\n')[0]}` }).catch(() => {});
-                        require('fs').unlinkSync(dbgPath);
-                    }
                     console.warn(`[UMANG] Attempt ${_attempt + 1} failed: ${e.message.split('\n')[0]}`);
                     if (_attempt === 3) throw new Error("UMANG page failed to load after 4 attempts. Check proxy/site.");
                     await umPage.waitForTimeout(3000);
