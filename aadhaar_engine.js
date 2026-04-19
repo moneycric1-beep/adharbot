@@ -200,7 +200,7 @@ function askTelegram(bot, chatId, stateTracker, promptText, promptType = 'text',
 async function safeFill(locator, value, label) {
     try {
         await locator.waitFor({ state: 'visible', timeout: 15000 });
-        await locator.click({ clickCount: 3 });
+        await locator.click({ clickCount: 3, force: true });
         await locator.fill(value, { timeout: 10000 });
         await locator.dispatchEvent('input');
         await locator.dispatchEvent('change');
@@ -497,8 +497,13 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                 const dobEl = dobFieldCheck.first();
                 await dobEl.click();
                 await umPage.keyboard.type(dobForInput, { delay: 80 });
+                await umPage.keyboard.press('Escape'); // close datepicker popup
+                await umPage.waitForTimeout(300);
                 await umPage.keyboard.press('Tab');
                 await umPage.waitForTimeout(500);
+                // Click elsewhere to ensure datepicker is dismissed
+                await frame.locator('body').click({ position: { x: 10, y: 10 }, force: true }).catch(() => {});
+                await umPage.waitForTimeout(300);
                 console.log(`[UMANG] DOB filled: ${dobForInput}`);
             }
 
@@ -515,9 +520,7 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                 const resC = await askTelegram(bot, chatId, stateTracker, "<blockquote>🔰 <b>Registry Firewall (UMANG):</b>\nDecode the Captcha:</blockquote>", 'CAPTCHA', tempCap);
                 if (fs.existsSync(tempCap)) fs.unlinkSync(tempCap);
                 
-                await safeFill(frame.locator('input[formcontrolname="captcha"], input#mat-input-4').first(), resC.data, 'UMANG_CAPTCHA');
-
-                // Click "Send OTP" / "Submit" button
+                await safeFill(frame.locator('input[formcontrolname="captcha"], input#mat-input-4').first(), resC.data, 'UMANG_CAPTCHA');                // Click "Send OTP" / "Submit" button
                 const submitBtn = frame.locator('button:has-text("Send OTP"), button:has-text("Get OTP"), button:has-text("Submit"), button[type="submit"], button.btn-primary').first();
                 await submitBtn.waitFor({ state: 'visible', timeout: 15000 });
                 await submitBtn.click({ force: true });
