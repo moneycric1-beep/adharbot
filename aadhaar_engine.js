@@ -121,15 +121,14 @@ async function prepareContext() {
         umSession = JSON.parse(fs.readFileSync(umSessionPath, 'utf8'));
     }
 
-    // Both UMANG and UIDAI need Indian proxy — Railway datacenter IPs are blocked by both
+    // UMANG: NO proxy — Railway IPs can reach UMANG directly; proxy causes load timeout
     const baseGeo = { permissions: ['geolocation'], geolocation: { latitude: 28.6139, longitude: 77.2090 } };
     const umOptions = { ...baseGeo };
     if (umSession) umOptions.storageState = umSession;
-    if (PROXY_CONFIG) umOptions.proxy = PROXY_CONFIG;
     const umContext = await globalBrowser.newContext(umOptions);
     const umPage = await umContext.newPage();
 
-    // UIDAI: Indian proxy required
+    // UIDAI: Indian proxy required (blocks datacenter IPs)
     const uiOptions = { ...baseGeo };
     if (PROXY_CONFIG) {
         uiOptions.proxy = PROXY_CONFIG;
@@ -465,12 +464,11 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                 try {
                     if (_attempt > 0) {
                         console.warn(`[UMANG] Page reload attempt ${_attempt + 1}...`);
-                        // Try navigating to home first to warm up connection before department URL
-                        await umPage.goto('https://web.umang.gov.in/web_new/home', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-                        await umPage.waitForTimeout(2000);
-                        await umPage.goto(umUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+                        await umPage.goto(umUrl, { waitUntil: 'domcontentloaded', timeout: 90000 }).catch(() => {});
+                        await umPage.waitForTimeout(3000);
                     } else {
-                        await umPage.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
+                        // First attempt: page was pre-loaded in pool, just wait for it
+                        await umPage.waitForLoadState('networkidle', { timeout: 45000 }).catch(() => {});
                     }
                     const currentUrl = umPage.url();
                     const title = await umPage.title().catch(() => '?');
@@ -489,9 +487,9 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                     }
 
                     // Wait for iframe
-                    await umPage.waitForSelector('#myIframe', { state: 'attached', timeout: 45000 });
+                    await umPage.waitForSelector('#myIframe', { state: 'attached', timeout: 60000 });
                     frame = umPage.frameLocator('#myIframe');
-                    await frame.locator('.ng-arrow-wrapper').first().waitFor({ state: 'visible', timeout: 60000 });
+                    await frame.locator('.ng-arrow-wrapper').first().waitFor({ state: 'visible', timeout: 90000 });
                     iframeReady = true;
                     break;
                 } catch (e) {
