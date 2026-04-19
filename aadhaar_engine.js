@@ -2,12 +2,41 @@ const { chromium } = require('playwright');
 const fs = require('fs-extra');
 const path = require('path');
 const { spawn } = require('child_process');
+const { Pool } = require('pg');
 
 // ─── LokiProxy Indian Proxy ───────────────────────────────────────────────────
-// Set PROXY_URL in Railway env as: http://USER:PASS@host:port
-// e.g. http://USER773504-zone-custom-region-IN:PASSWORD@global.rp.lokiproxy.com:10000
 const PROXY_URL = process.env.PROXY_URL || null;
-const UMANG_MOBILE = process.env.UMANG_MOBILE || null; // Operator's UMANG registered mobile
+const UMANG_MOBILE = process.env.UMANG_MOBILE || null;
+
+// ─── PostgreSQL for session persistence ──────────────────────────────────────
+const pgPool = process.env.DATABASE_URL
+    ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } })
+    : null;
+
+async function loadUmangSessionFromDB() {
+    if (!pgPool) return null;
+    try {
+        await pgPool.query(`CREATE TABLE IF NOT EXISTS umang_session (id TEXT PRIMARY KEY, data JSONB NOT NULL)`);
+        const res = await pgPool.query(`SELECT data FROM umang_session WHERE id = 'session'`);
+        if (res.rows.length > 0) {
+            console.log('[UMANG] Session loaded from PostgreSQL.');
+            return res.rows[0].data;
+        }
+    } catch (e) { console.warn('[UMANG] Could not load session from DB:', e.message); }
+    return null;
+}
+
+async function saveUmangSessionToDB(storageState) {
+    if (!pgPool) return;
+    try {
+        await pgPool.query(
+            `INSERT INTO umang_session (id, data) VALUES ('session', $1)
+             ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
+            [JSON.stringify(storageState)]
+        );
+        console.log('[UMANG] Session saved to PostgreSQL.');
+    } catch (e) { console.warn('[UMANG] Could not save session to DB:', e.message); }
+}
 
 const STICKERS_DEFAULT = {
     BOOTING: "CAACAgIAAxkBAAEL6VdmAe6pXqL3P2wZ6Z_0p6Q2Y_S7XgACRAADr8ZRGm9-vWj498_rNAQ",
@@ -64,22 +93,23 @@ async function initPool() {
 async function prepareContext() {
     const umSessionPath = path.join(__dirname, 'umang_session.json');
 
-    // UMANG: NO proxy — proxy blocks Angular JS bundles, causing blank page
-    // UIDAI: Indian proxy required for OTP/download
-    const baseGeo = { permissions: ['geolocation'], geolocation: { latitude: 28.6139, longitude: 77.2090 } };
+    // Load UMANG session: first try DB (persists across redeploys), then local file
+    let umSession = await loadUmangSessionFromDB();
+    if (!umSession && fs.existsSync(umSessionPath)) {
+        umSession = JSON.parse(fs.readFileSync(umSessionPath, 'utf8'));
+    }
 
+    // UMANG: NO proxy — proxy breaks Angular JS bundle loading
+    const baseGeo = { permissions: ['geolocation'], geolocation: { latitude: 28.6139, longitude: 77.2090 } };
     const umOptions = { ...baseGeo };
-    if (fs.existsSync(umSessionPath)) umOptions.storageState = umSessionPath;
+    if (umSession) umOptions.storageState = umSession;
     const umContext = await globalBrowser.newContext(umOptions);
     const umPage = await umContext.newPage();
-    console.log('[CONTEXT] UMANG: direct (no proxy)');
 
+    // UIDAI: Indian proxy required
     const uiOptions = { ...baseGeo };
     if (PROXY_URL) {
         uiOptions.proxy = { server: PROXY_URL };
-        console.log('[CONTEXT] UIDAI: proxy enabled');
-    } else {
-        console.warn('[CONTEXT] UIDAI: no proxy set');
     }
     const uiContext = await globalBrowser.newContext(uiOptions);
     const uiPage = await uiContext.newPage();
@@ -184,39 +214,46 @@ function getPoolStats() {
     };
 }
 
-// Handles UMANG login when session expired/missing
+// Handles UMANG login when session expired/missing — called from /umanglogin admin command
 async function doUmangLogin(umPage, bot, chatId, stateTracker) {
-    if (!UMANG_MOBILE) throw new Error("UMANG session expired. Set UMANG_MOBILE in Railway env and re-run.");
+    console.log('[UMANG] Starting login flow...');
+    await bot.sendMessage(chatId, "<blockquote>🔄 <b>UMANG Login Required</b>\nPage load ho rahi hai...</blockquote>", { parse_mode: 'HTML' }).catch(() => {});
 
-    console.log('[UMANG] Session expired — attempting auto-login with UMANG_MOBILE');
-    await bot.sendMessage(chatId, "<blockquote>🔄 <b>UMANG Session Expired</b>\nAuto re-login ho raha hai...</blockquote>", { parse_mode: 'HTML' }).catch(() => {});
+    const loginUrl = 'https://web.umang.gov.in/web_new/login';
+    await umPage.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-    // Fill mobile number
-    await umPage.waitForSelector('input[placeholder*="Mobile"], input[name*="mobile"], input[type="tel"]', { timeout: 15000 });
-    const mobileInput = umPage.locator('input[placeholder*="Mobile"], input[name*="mobile"], input[type="tel"]').first();
-    await mobileInput.fill(UMANG_MOBILE);
+    // Enter mobile number
+    await umPage.waitForSelector('input[type="tel"], input[name="mobileNo"], input[id*="mobile"]', { timeout: 20000 });
+    const mobileInput = umPage.locator('input[type="tel"], input[name="mobileNo"], input[id*="mobile"]').first();
+    await mobileInput.fill(UMANG_MOBILE || '');
 
-    // Click Get OTP / Login button
-    const otpBtn = umPage.locator('button:has-text("Get OTP"), button:has-text("Login with OTP"), button:has-text("Send OTP")').first();
-    await otpBtn.click();
+    // Click "Login with OTP" or similar
+    await umPage.locator('button:has-text("Login with OTP"), button:has-text("Get OTP"), a:has-text("Login with OTP")').first().click();
 
-    // Ask user/admin for the OTP
+    await bot.sendMessage(chatId, "<blockquote>🔑 <b>UMANG OTP Bhejo</b>\nOperator ke mobile pe OTP aaya hoga:</blockquote>", { parse_mode: 'HTML' }).catch(() => {});
+
     const resOtp = await askTelegram(bot, chatId, stateTracker,
-        "<blockquote>🔑 <b>UMANG Login OTP</b>\nOperator ke mobile pe OTP aaya hai, enter karo:</blockquote>",
+        "<blockquote>📲 <b>UMANG OTP Enter Karo:</b></blockquote>",
         'text', null, 180000
     );
-    const otpVal = String(resOtp.data).match(/\b\d{6}\b/);
-    const otpInput = umPage.locator('input[placeholder*="OTP"], input[name*="otp"]').first();
+    const otpVal = String(resOtp.data).match(/\b\d{4,6}\b/);
+
+    // Enter OTP
+    await umPage.waitForSelector('input[type="tel"][maxlength], input[name*="otp"], input[id*="otp"]', { timeout: 20000 });
+    const otpInput = umPage.locator('input[type="tel"][maxlength], input[name*="otp"], input[id*="otp"]').first();
     await otpInput.fill(otpVal ? otpVal[0] : resOtp.data.trim());
-    await umPage.locator('button:has-text("Login"), button:has-text("Verify"), button:has-text("Submit")').first().click();
+    await umPage.locator('button:has-text("Login"), button:has-text("Verify"), button:has-text("Submit"), button:has-text("Continue")').first().click();
 
-    // Wait for redirect away from login page
-    await umPage.waitForURL(url => !url.includes('/login'), { timeout: 30000 });
+    // Wait for redirect to dashboard/home
+    await umPage.waitForURL(url => !url.toString().includes('/login'), { timeout: 30000 });
 
-    // Save session for future use
+    // Save session to PostgreSQL (persists across redeploys)
     const umSessionPath = path.join(__dirname, 'umang_session.json');
-    await umPage.context().storageState({ path: umSessionPath });
-    console.log('[UMANG] Session saved to umang_session.json');
+    const state = await umPage.context().storageState({ path: umSessionPath });
+    await saveUmangSessionToDB(state);
+
+    await bot.sendMessage(chatId, "<blockquote>✅ <b>UMANG Login Successful!</b>\nSession save ho gayi — ab requests chalegi.</blockquote>", { parse_mode: 'HTML' }).catch(() => {});
+    console.log('[UMANG] Login successful, session saved to DB.');
 }
 
 async function executeTask(bot, chatId, crackName, mobileNumber, searchName, stateTracker, updateProg, settings) {
@@ -268,11 +305,7 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                     console.log(`[UMANG] Attempt ${_attempt + 1} — URL: ${currentUrl} | Title: ${title}`);
 
                     if (currentUrl.includes('login') || currentUrl.includes('signin') || currentUrl === 'about:blank') {
-                        // Session expired — try to login
-                        await doUmangLogin(umPage, bot, chatId, stateTracker);
-                        // After login, go back to the service URL
-                        await umPage.goto(umUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
-                        throw new Error(`Re-login done, retrying...`);
+                        throw new Error("UMANG session expired. Owner must run /umanglogin to re-authenticate.");
                     }
 
                     // Wait for iframe to attach (may not be 'visible' — Angular renders it hidden first)
@@ -494,3 +527,4 @@ module.exports.executeTask = executeTask;
 module.exports.forceKillUser = forceKillUser;
 module.exports.takeUserScreenshot = takeUserScreenshot;
 module.exports.getPoolStats = getPoolStats;
+module.exports.doUmangLogin = doUmangLogin;

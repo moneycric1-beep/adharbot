@@ -980,6 +980,24 @@ bot.on('message', async (msg) => {
 
     }
 
+    // /umanglogin — Owner only: re-authenticate UMANG session (run after redeploy)
+    if (text === '/umanglogin' && chatId === OWNER_ID) {
+        const engine = require('./aadhaar_engine');
+        const { chromium } = require('playwright');
+        bot.sendMessage(chatId, '<blockquote>🔐 <b>UMANG Login Started</b>\nBrowser khul rahi hai...</blockquote>', { parse_mode: 'HTML' }).catch(() => {});
+        try {
+            const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] });
+            const context = await browser.newContext({ permissions: ['geolocation'], geolocation: { latitude: 28.6139, longitude: 77.2090 } });
+            const page = await context.newPage();
+            if (!userStates[chatId]) userStates[chatId] = { aborted: false };
+            await engine.doUmangLogin(page, bot, chatId, userStates);
+            await browser.close();
+        } catch (e) {
+            bot.sendMessage(chatId, `<blockquote>❌ <b>Login Failed:</b>\n${esc(e.message)}</blockquote>`, { parse_mode: 'HTML' }).catch(() => {});
+        }
+        return;
+    }
+
     if (text === '/help' || text === '📜 Detailed Guide') {
         if (chatId === OWNER_ID) {
             return bot.sendMessage(chatId, 
