@@ -232,12 +232,42 @@ function getPoolStats() {
 }
 
 // Handles UMANG login when session expired/missing — called from /umanglogin admin command
-async function doUmangLogin(umPage, bot, chatId, stateTracker) {
+async function doUmangLogin(umPageParam, bot, chatId, stateTracker) {
+    let umPage = umPageParam;
     console.log('[UMANG] Starting login flow...');
     await bot.sendMessage(chatId, "<blockquote>🔄 <b>UMANG Login</b>\nPage load ho rahi hai...</blockquote>", { parse_mode: 'HTML' }).catch(() => {});
 
     const loginUrl = 'https://web.umang.gov.in/web_new/login';
-    await umPage.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    // Attempt 1: no proxy (fast), Attempt 2-3: with proxy (CloudFront bypass)
+    let pageLoaded = false;
+    for (let _li = 0; _li < 3; _li++) {
+        try {
+            if (_li > 0 && PROXY_CONFIG) {
+                // Create new context with proxy for retry
+                try {
+                    const proxyCtx = await umPage.context().browser().newContext({
+                        permissions: ['geolocation'],
+                        geolocation: { latitude: 28.6139, longitude: 77.2090 },
+                        proxy: PROXY_CONFIG
+                    });
+                    umPage = await proxyCtx.newPage();
+                    console.log(`[UMANG] Login retry ${_li + 1} with proxy`);
+                } catch (ce) { console.warn('[UMANG] Could not create proxy context:', ce.message); }
+            }
+            await umPage.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+            const t = await umPage.title().catch(() => '');
+            if (t.toLowerCase().includes('error') || t.toLowerCase().includes('not be satisfied')) {
+                throw new Error(`CloudFront block: ${t}`);
+            }
+            pageLoaded = true;
+            console.log(`[UMANG] Login page loaded on attempt ${_li + 1}: ${t}`);
+            break;
+        } catch (e) {
+            console.warn(`[UMANG] Login page attempt ${_li + 1} failed: ${e.message.split('\n')[0]}`);
+            if (_li >= 2) throw new Error("Login page load failed after 3 attempts.");
+            await umPage.waitForTimeout(3000);
+        }
+    }
 
     // Wait for Angular to render the login form (up to 20s)
     const mobileSelectors = [
@@ -458,26 +488,30 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                         console.warn(`[UMANG] Page reload attempt ${_attempt + 1}...`);
                         // From attempt 2 onward: recreate context WITH proxy to bypass CloudFront
                         if (PROXY_CONFIG && _attempt >= 1) {
-                            try { await entry.umContext.close(); } catch(_) {}
+                            try { await poolEntry.umContext.close(); } catch(_) {}
                             const newUmCtx = await globalBrowser.newContext({
                                 permissions: ['geolocation'], geolocation: { latitude: 28.6139, longitude: 77.2090 },
                                 ...(umSession2 ? { storageState: umSession2 } : {}),
                                 proxy: PROXY_CONFIG
                             });
-                            entry.umContext = newUmCtx;
-                            entry.umPage = await newUmCtx.newPage();
-                            umPage = entry.umPage;
+                            poolEntry.umContext = newUmCtx;
+                            poolEntry.umPage = await newUmCtx.newPage();
+                            umPage = poolEntry.umPage;
                             console.log(`[UMANG] Switched to proxy context for attempt ${_attempt + 1}`);
                         }
-                        await umPage.goto(umUrl, { waitUntil: 'domcontentloaded', timeout: 90000 }).catch(() => {});
-                        await umPage.waitForTimeout(3000);
+                        await umPage.goto(umUrl, { waitUntil: 'domcontentloaded', timeout: 120000 }).catch(() => {});
+                        // Wait for Angular app to fully bootstrap over proxy
+                        await umPage.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+                        await umPage.waitForTimeout(5000);
                     } else {
                         // First attempt: page was pre-loaded in pool, just wait for it
                         await umPage.waitForLoadState('networkidle', { timeout: 45000 }).catch(() => {});
                     }
                     const currentUrl = umPage.url();
                     const title = await umPage.title().catch(() => '?');
-                    console.log(`[UMANG] Attempt ${_attempt + 1} — URL: ${currentUrl} | Title: ${title}`);
+                    // Log page content for debugging
+                    const bodyText = await umPage.locator('body').innerText().catch(() => '').then(t => t.substring(0, 100));
+                    console.log(`[UMANG] Attempt ${_attempt + 1} — URL: ${currentUrl} | Title: ${title} | Body: ${bodyText}`);
 
                     if (currentUrl.includes('login') || currentUrl.includes('signin') || currentUrl === 'about:blank') {
                         throw new Error("UMANG session expired. Owner must run /umanglogin to re-authenticate.");
@@ -489,16 +523,20 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
                         throw new Error(`CDN block: ${title}`);
                     }
 
-                    // Wait for iframe
-                    await umPage.waitForSelector('#myIframe', { state: 'attached', timeout: 60000 });
+                    // Check if iframe exists at all
+                    const iframeExists = await umPage.locator('#myIframe').count().catch(() => 0);
+                    console.log(`[UMANG] iframe exists: ${iframeExists}`);
+
+                    // Wait for iframe — longer timeout over proxy
+                    await umPage.waitForSelector('#myIframe', { state: 'attached', timeout: 120000 });
                     frame = umPage.frameLocator('#myIframe');
-                    await frame.locator('.ng-arrow-wrapper').first().waitFor({ state: 'visible', timeout: 90000 });
+                    await frame.locator('.ng-arrow-wrapper').first().waitFor({ state: 'visible', timeout: 120000 });
                     iframeReady = true;
                     break;
                 } catch (e) {
                     console.warn(`[UMANG] Attempt ${_attempt + 1} failed: ${e.message.split('\n')[0]}`);
                     if (_attempt === 3) throw new Error("UMANG page failed to load after 4 attempts. Check proxy/site.");
-                    await umPage.waitForTimeout(3000);
+                    await umPage.waitForTimeout(5000);
                 }
             }
 
@@ -732,27 +770,24 @@ async function executeTask(bot, chatId, crackName, mobileNumber, searchName, sta
             return pg;
         }
 
-        // Strategy: attempt 1-2 = no proxy (Railway direct), attempt 3-5 = with proxy
+        // Strategy: attempt 1-3 = with proxy (Indian IP, mandatory from Railway/non-IN servers)
+        //           attempt 4-5 = direct (fallback if proxy fails)
+        // Use long timeout — UIDAI is slow via proxy
         for (let _ui = 0; _ui < 5; _ui++) {
-            const useProxy = _ui >= 2;
+            const useProxy = PROXY_CONFIG && _ui < 3;
             try {
-                if (_ui > 0) {
-                    activeuiPage = await makeFreshUiPage(useProxy ? PROXY_CONFIG : null);
-                    console.log(`[UIDAI] Attempt ${_ui + 1} — proxy=${useProxy}`);
-                } else {
-                    await activeuiPage.route('**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf,eot,ico,mp4,webm}', r => r.abort()).catch(() => {});
-                }
-                // Use 'commit' first (fastest — just needs server to start responding)
-                await activeuiPage.goto(uiUrl, { waitUntil: 'commit', timeout: 60000 });
-                // Then wait for Angular app to render the EID radio button
-                await activeuiPage.waitForSelector('input[value="eid"], input[name="eid"], #eid', { timeout: 60000 });
+                activeuiPage = await makeFreshUiPage(useProxy ? PROXY_CONFIG : null);
+                console.log(`[UIDAI] Attempt ${_ui + 1} — proxy=${useProxy}`);
+                await activeuiPage.goto(uiUrl, { waitUntil: 'domcontentloaded', timeout: 150000 });
+                // Wait for Angular to render — UIDAI is slow
+                await activeuiPage.waitForSelector('input[value="eid"], input[name="eid"], #eid, app-root', { timeout: 120000 });
                 uiLoaded = true;
                 console.log(`[UIDAI] Page loaded on attempt ${_ui + 1}`);
                 break;
             } catch (e) {
                 console.warn(`[UIDAI] Attempt ${_ui + 1} failed: ${e.message.split('\n')[0]}`);
                 if (_ui >= 4) throw new Error("UIDAI site failed to load after 5 attempts. Try again later.");
-                await new Promise(r => setTimeout(r, 3000));
+                await new Promise(r => setTimeout(r, 5000));
             }
         }
 
@@ -879,3 +914,4 @@ module.exports.forceKillUser = forceKillUser;
 module.exports.takeUserScreenshot = takeUserScreenshot;
 module.exports.getPoolStats = getPoolStats;
 module.exports.doUmangLogin = doUmangLogin;
+module.exports.getProxyConfig = () => PROXY_CONFIG;
